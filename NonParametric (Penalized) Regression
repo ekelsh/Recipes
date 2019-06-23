@@ -1,0 +1,218 @@
+#Nonparametric Regression [Kernel Quantile and Gaussian]
+#Penalized Regression
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV and variety of tuning parameters on ENTIRE dataset
+#step 3: retrieve optimal Tuning Parameters & get CV model's measure of error for later model comparison
+#step 4: rebuid model w/ optimal hyperparameters
+#step 5: repeat step 1 w/ tuned model
+
+library(survival)
+library(penalized)
+library(kernlab)
+library(AUC)
+library(car)
+library(glmnet)
+library(lmtest)
+library(caret)
+library(dplyr)
+library(MASS)
+library(leaps)
+library(tidyverse)
+library(relaimpo)
+
+set.seed(999)
+
+#remove rows w/ missing dtaa
+TBRays <- na.omit(TBRays) %>%
+  as_tibble
+
+#Create Training/Testing Datasets and Matrices
+set.seed(999)    #set seed to replicate results
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -7])  #all variables besides Y / string variables
+testx <- as.matrix(test[, -7])
+
+trainy <- as.double(as.matrix(train[, 7]))  #represents the Y in question
+testy <- as.double(as.matrix(test[, 7]))
+
+
+#METHOD 1
+#Kernel Quantile Regression [non parametric regression]
+#more robust vs outliers
+#uses kernel fxns
+
+kqr.model.rbf <- kqr(trainx, trainy, kernel = "rbf")
+kqr.model.vanilla <- kqr(trainx, trainy, kernel = "vanilla")
+kqr.model.anova <- kqr(trainx, trainy, kernel = "anova")   #tau = the quantile to be estimated (between 0 and 1)...for 0.50 the median is calculated (default)
+      #C = cost regularization parameter...the parameter controls the smoothness of the fitted function, essentially higher C leads to less smooth functions (default is 1)
+      #type = "C" Classification, "eps" regression, "probabilities" [does this on its own so ignore]
+      #kernel = actual link to the vector containing the kernel
+            #kernel = "rbfdot" Radial Basis Kernel "Gaussian"
+            #kernel = "stringdot" String Kernel
+            #kernel = "polydot" Polynomial Kernel
+            #kernel = "vanilladot" Linear Kernel
+            #kernel = "laplacedot" Laplacian Kernel
+            #kernel = "tanhdot" Hyperbolic Tangent Kernel
+            #kernel = "anovadot" ANOVA RBF Kernel
+      #kpar =
+
+kqr.model.rbf
+      #will return the kernel type...Gaussian Radial Basis Kernel FXN
+      #will return hyperparameter...sigma=0.11645 in this case
+      #will return the regularization cost parameter...0.1 in this case
+
+kernelf(kqr.model.rbf)
+      #will return the hyperparameter
+
+predict.rbf <- predict(kqr.model.rbf, testx)
+predict.vanilla <- predict(kqr.model.vanilla, testx)
+predict.anova <- predict(kqr.model.anova, testx)
+
+head(data.frame("RBF" = predict.rbf,
+                "Vanilla" = predict.vanilla,
+                "ANOVA" = predict.anova,
+                "Actual" = testy))
+
+R2(predict.rbf, testy)  #.702
+R2(predict.vanilla, testy)  #.776
+R2(predict.anova, testy)  #.504
+
+
+#CROSS VALIDATION!!!!    method = rqlasso
+      #tune paramter = lambda
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+kqr.cv <- train(attendance ~., data=train, method = "gaussprLinear", 
+                preProcess = c("center", "scale"),
+                tunelength=50, trControl=train.control)
+
+kqr.cv   #rsq 0.78
+
+#tune models
+#evaluate tuned models
+
+###########
+
+#METHOD 2
+#Gaussian Regression [non parametric regression]
+#uses kernel fxns
+
+gaus.model.rbf <- gausspr(trainx, trainy, kernel = "rbf")
+gaus.model.vanilla <- gausspr(trainx, trainy, kernel = "vanilla")
+gaus.model.anova <- gausspr(trainx, trainy, kernel = "anova")   #tau = the quantile to be estimated (between 0 and 1)...for 0.50 the median is calculated (default)
+        #C = cost regularization parameter...the parameter controls the smoothness of the fitted function, essentially higher C leads to less smooth functions (default is 1)
+        #type = "classification" or "regression"
+        #kernel = actual link to the vector containing the kernel
+            #kernel = "rbfdot" Radial Basis Kernel "Gaussian"
+            #kernel = "stringdot" String Kernel
+            #kernel = "polydot" Polynomial Kernel
+            #kernel = "vanilladot" Linear Kernel
+            #kernel = "laplacedot" Laplacian Kernel
+            #kernel = "tanhdot" Hyperbolic Tangent Kernel
+            #kernel = "anovadot" ANOVA RBF Kernel
+        #kpar =
+        #var = initial noise variance..only for regression...default is.001
+        #variance.model = TRUE builds model for variance or st dev estimation (only for regression)
+
+gaus.model.rbf
+      #will return the hyperparameter of the kernel fxn....siga=0.144 in this case
+      #will return the train error...0.185 in this case
+
+alpha(gaus.model.rbf)
+
+predict.rbf <- predict(gaus.model.rbf, testx)
+predict.vanilla <- predict(gaus.model.vanilla, testx)
+predict.anova <- predict(gaus.model.anova, testx)
+
+head(data.frame("Actual" = testy, 
+                "RBF" = predict.rbf,
+                "Vanilla" = predict.vanilla,
+                "ANOVA" = predict.anova))
+
+R2(predict.rbf, testy)  #.736
+R2(predict.vanilla, testy)  #.777
+R2(predict.anova, testy)  #.078
+
+#CROSS VALIDATION!!!!   method = gaussprRadial or gaussprLinear (or whatever kernel we used)
+      #tune par Linear = none
+      #tune par Poly = degree and sca
+      #tune par Radial = sigma
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+gaus.cv <- train(attendance ~., data=train, method = "gaussprLinear", 
+                 preProcess = c("center", "scale"),
+                 tunelength=50, trControl=train.control)
+
+gaus.cv  #rsq .786
+
+##########
+
+#METHOD 3b - regression
+#Penalized Linear Regression (a sparse version of OLS)
+#Combines the L1 (lasso) and L2 (ridge) penalty
+#linear or logistic
+
+pen.model <- penalized(attendance ~., data=train, trace = TRUE)
+
+predict <- predict(pen.model, test)
+R2(predict, testy)
+
+#CV method "penalized"
+  #tune parameters = Lambda1 (L1) and Lambda2 (L2)
+pls.cv <- train(attendance ~., data=train, method = "penalized", 
+               trControl=trainControl(method = "repeatedcv",
+                                      number = 10, repeats = 10,
+                                      verboseIter = TRUE))
+
+pls.cv
+pls.cv$bestTune
+      #lambda 1 of 4
+      #lambda 2 of 1
+
+pen.model <- penalized(attendance ~., data=train, lambda1 = 4, lambda2 = 1, trace = TRUE)
+      #optimal lambdas taken from previous iteration
+      #lambda1 = L1 penalization
+      #lambda2 = L2 penalization
+
+residuals(pen.model)[1:10]
+fitted(pen.model)[1:10]
+
+coefficients(pen.model, "all")
+
+pen.model@penalized
+pen.model@unpenalized
+pen.model@iterations
+pen.model@weights
+pen.model@nuisance
+
+loglik(pen.model)
+penalty(pen.model)
+
+predict <- data.frame(predict(pen.model, data=test))
+
+head(data.frame("predict" = predict$mu, 
+                "actual" = test$attendance))
+
+#can also use this as a CV of sorts......with ridge/LASSO
+
+##########
+
+#METHOD 3b - Logistic
+#Penalized Linear Regression (a sparse version of OLS)
+#Combines the L1 (lasso) and L2 (ridge) penalty
+#linear or logistic
+
+#cv method = "plr"
+#tuning parameters = lambda and cp
+
+
