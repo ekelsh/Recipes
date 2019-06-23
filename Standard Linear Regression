@@ -1,0 +1,202 @@
+#STANDARD LINEAR REGRESSION
+#finding the best fit line
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV on ENTIRE dataset
+#step 3: get CV model's measure of error for later model comparison
+#step 4: tune model if necessary
+#step 5: repeat step 1 w/ tuned model
+
+library(ridge)
+library(AUC)
+library(car)
+library(glmnet)
+library(lmtest)
+library(RcmdrMisc)
+library(caret)
+library(dplyr)
+library(broom)
+library(modelr)
+library(relaimpo)
+
+set.seed(999)
+
+plot(attendance ~., TBRays)
+
+#remove rows w/ missing dtaa
+TBRays <- na.omit(TBRays) %>%
+  as_tibble
+
+#Create Training/Testing Datasets and Matrices
+set.seed(999)    #set seed to replicate results
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -7])  #all variables besides Y / string variables
+testx <- as.matrix(test[, -7])
+
+trainy <- as.double(as.matrix(train[, 7]))  #represents the Y in question
+testy <- as.double(as.matrix(test[, 7]))
+
+
+#original model(s)  [remember to change binary variables to factors]
+lm.model <- lm(attendance ~. , data = train)
+
+lm.model.int <- lm(attendance ~. ^2, data=train) 
+    #looks at interaction between all variables
+lm.model.single.int <- lm(attendance ~ . +
+                home_win_pct:pct_season_completed, 
+                data=train)
+    # : represents the interaction between homewinpc and pctszncomp
+lm.model.scale <- lm(attendance ~ . + scale(home_win_pct) +
+                  scale(temp), data=train)    
+    #scales the homewinpct and temp variables
+lm.model.exp <- lm(attendance ~ . + I(temp ^2), 
+                   data=train)    
+    #I(temp^2) represents an exp term [polynomial]...also can be poly()
+    #sqrt(temp coeff) for easy interpretation of the coeff
+lm.model.log <- lm(log(attendance) ~ . + log(pct_season_completed), 
+                   data=train)
+    #log(attendance) used to transform Y into logs and pctszncomp into logs
+    #use exp(y hat) and exp(pctszncomp) for easy interpretation of the prediction/coeff
+lm.model.minus <- lm(attendance ~. - opposing_team,
+                     data=train)
+
+
+summary(lm.model)
+    #rsq (.788), adjrsq (.785), f-stat, etc.
+summary(lm.model)$sigma   
+    #2725.654
+
+#exploring the model(s)
+tidy(lm.model)
+vif(lm.model)
+coef(lm.model)
+residuals(lm.model)
+fitted.values(lm.model)
+anova(lm.model)
+vcov(lm.model)   #covariance matrix for model parameters
+confint(lm.model)  
+
+#resiudal analysis
+plot(lm.model)
+    #plot 1 = Residuals vs Fitted
+        #will ID non linearity...if a pattern exists, other attributes have not been accurately captured
+        #will ID heteroskedasticity...if our residuals have a funnel shape, we are in trouble [fix w/ log or square root transformation]
+    #plot 2 = Normal Q-Q Plot
+        #want residuals to be as close to the line as possible
+    #plot 3 = Scale-Location Plot
+        #shows if residuals are spread equally among range of predictors
+        #how we check assumption of homoscedasticity
+        #want a straight horizontal line
+    #plot 4 = Residuals vs Leverage Plot
+        #helps to find influencial outliers
+
+hist(lm.model$residuals)  
+      #normality assumption
+      #mean should be around 0 w/ normal dsitribution
+shapiro.test(residuals(lm.model))   
+      #tests for normality of the residuals...H0=residuals normally distributed
+qqPlot(lm.model)   
+      #dots should hug the line
+plot(lm.model, which = 3) 
+      #constant variance assumption
+      #there should be no pattern & no fanning out
+bptest(lm.model)  
+      #Ho=variance is constant [happens when explained variance is too large relative to unexplained variance]
+      #independence assumption
+dwtest(lm.model, alternative = "two.sided")  
+      #H0=correlation of residuals is 0, H1=autocorrelation of residuals
+
+ggplot(train, aes(home_win_pct, attendance)) + 
+  geom_point() + geom_smooth(method="lm") + 
+  geom_smooth(se=FALSE, color="red")
+      #must do a seperate plot per variable included in the model
+
+rstandard(lm.model)
+#to standardize residuals
+
+#assess model
+glance(lm.model) 
+    #rsq (.788)
+    #adj rsq (.786)
+    #sigma (2726) (RMSE)
+    #test statistic, p.value, and df
+AIC(lm.model)     #11335
+BIC(lm.model)     #11375
+
+#comparing models
+list(lm.model = broom::glance(lm.model), 
+     lm.model.int = broom::glance(lm.model.int))
+
+test %>%
+  gather_predictions(lm.model, lm.model.int) %>%
+  group_by(model) %>%
+  summarise(MSE = mean((attendance-pred)^2))    #want the model with the LEAST MSE value
+
+#make predictions with new data
+predict <- predict(lm.model, test)
+predict.lm <- data.frame(predict(lm.model, newdata=test, interval = "confidence"))
+
+summary(lm.model)$r.squared        #.788
+summary(lm.model)$adj.r.squared    #.785
+summary(lm.model)$fstatistic
+
+mean(abs(predict.lm$fit - test$attendance))   #the avg prediction is 2,211 off
+
+compare <- cbind ("Actual" = testy, 
+                  "Predicted" = predict.lm$fit)
+
+mean(apply(compare, 1, min)/apply(compare, 1, max))
+      #calculates accuracy (92.2%)
+
+head(data.frame("Actual" = testy, 
+                "Predicted" = predict.lm$fit,
+                "Error" = predict.lm$fit - test$attendance))
+
+
+#CROSS VALIDATION!!!!!!!!!  method = "lm"
+      #only tuning parameter = intercept
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+cv.lm.model <- train(attendance ~., data=train, method = "lm", 
+                     tunelength=50, trControl=train.control)
+ 
+summary(cv.lm.model) #rsq (.788),adjrsq (.786)
+
+predict.cv <- as.vector(predict(cv.lm.model, test))
+
+mean(abs(predict.cv - testy))   #the avg prediction is 2,211 off
+
+compare <- cbind ("Actual" = testy, 
+                  "Predicted" = predict.cv)
+
+mean(apply(compare, 1, min)/apply(compare, 1, max))
+      #calculates accuracy (92.2%)
+
+head(data.frame("Actual" = testy, 
+                "Predicted" = predict.cv,
+                "Error" = predict.cv - test$attendance))
+
+#CONFIRMED!!! 
+
+#####
+#Best Subset Selection
+
+regsubsets(attendance ~ ., TBRays, nvmax = 19)
+summary(regsubsets(attendance ~ ., TBRays, nvmax = 19))
+#a star (*) means the variable was included in the mock model
+#each model represents a model with one additional variable added to it
+#shows relative importance of each variable in a way
+
+#####
+
+
+
+
+
