@@ -1,0 +1,195 @@
+#RIDGE REGRESSION
+#Alpha controls the mix of the 2 penalties  (between 0 [ridge] and 1 [lasso])
+#Lambda controls the amount of penalization (shrinkage)
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV and variety of tuning parameters on ENTIRE dataset
+#step 3: retrieve optimal Tuning Parameters & get CV model's measure of error for later model comparison
+#step 4: rebuid model w/ optimal hyperparameters
+#step 5: repeat step 1 w/ tuned model
+
+library(ridge)
+library(AUC)
+library(car)
+library(glmnet)
+library(lmtest)
+library(RcmdrMisc)
+library(caret)
+library(dplyr)
+library(broom)
+library(modelr)
+library(ridge)
+library(relaimpo)
+
+set.seed(999)
+
+#Create Training/Testing Datasets and Matrices
+set.seed(999)    #set seed to replicate results
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -7])  #all variables besides Y / string variables
+testx <- as.matrix(test[, -7])
+
+trainy <- as.double(as.matrix(train[, 7]))  #represents the Y in question
+testy <- as.double(as.matrix(test[, 7]))
+
+
+#METHOD 1 = linearRidge
+#original model
+ridge.model1 <- linearRidge(attendance ~., data=train)   #nPCs = number of principal components to use to choose the ridge regression parameter
+
+print(ridge.model1)
+summary(ridge.model1)
+
+coef(ridge.model1)
+
+plot(ridge.model1, xvar="lambda")   #nPCs vs Coefficients
+
+ridge.model1$max.nPCs
+ridge.model1$chosen.nPCs
+ridge.model1$lambda
+
+#predict output w/ test data
+predict.ridge1 <- predict(ridge.model1, test)
+
+head(data.frame("Ridge Ridge" = predict.ridge1,
+                "Actual" = testy))
+
+compare <- cbind("Actual" = test$attendance,
+                 "Predicted" = predict.ridge1)
+
+mean(apply(compare, 1, min)/apply(compare, 1, max))
+      #calculates accuracy (92.2%)
+
+mean((predict.ridge1 - testy)^2) 
+      #Mean Squared Error (MSE) 
+      #7374604
+
+R2(predict.ridge1, testy)
+      #77.8%
+
+#Cross Validation!!! method = "ridge" to get optimal lambda
+      #tuning parameter = lambda
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+ridge.model.cv <- train(attendance ~., data=train, method = "ridge",
+                        tunelength = 50, trControl=train.control)
+#or
+ridge.model.cv <- cv.glmnet(trainx, trainy, alpha=0, family='gaussian', 
+                            type.measure="mse", k=10)
+
+plot(ridge.model.cv)
+plot(ridge.model.cv$glmnet.fit, 
+     xvar="lambda", label=TRUE)
+      #error as a fxn of lambda (select lambda that minimizes error)
+      #shows that the LOG of the optimal value of lambda (the one that minimizes MSE is appx 6)
+
+ridge.model.cv$lambda.min
+      #407.67
+ridge.model.cv$lambda.1se    #THIS IS OUR OPTIMAL LAMBDA
+      #941
+      #gives the simplist model but also lies within 1 SE of optimal value of Lambda
+
+cv.ridge.model$results
+cv.ridge.model$bestTune
+
+coef(ridge.model.cv, s=941)
+      #shows ALL variables with many coefficients (not as sig coeff) pushed towards 0)
+      #coef based on optimal value of lambda
+
+predict.ridge.cv <- predict(ridge.model.cv,newx = testx, s=941, type= "response") 
+
+R2(predict.ridge.cv, testy)  #.7783
+RMSE(predict.ridge.cv, testy)    #2768
+
+#rebuild original model + predictions w/ optimal lambda
+ridge.model1 <- linearRidge(attendance ~., data=train, lambda=941)
+
+predict.ridge1 <- predict(ridge.model1, test)
+
+R2(predict.ridge1, testy)   #.775
+
+
+#METHOD 2 - glmnet
+#original model
+ridge.model2 <- glmnet(trainx , trainy, alpha=0, family="gaussian")   #standardize = FALSE if I already scaled my variables
+      #family = "gaussian", "binomial", "poisson", "multinomial", "cox"
+      #alpha = 1 for LASSO, alpha=0 for ridge
+coef(ridge.model2)
+
+plot(ridge.model2, xvar="lambda")   #Log Lambda vs Coefficients
+
+ridge.model2$lambda
+
+#Cross Validation!!! to get optimal lambda
+      #tuning parameter = lambda
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+ridge.model.cv <- train(attendance ~., data=train, method = "ridge",
+                        preProcess = c("center", "scale"),
+                        tunelength = 50, trControl=train.control)
+#or
+ridge.model.cv <- cv.glmnet(trainx, trainy, alpha=0, family='gaussian', 
+                            type.measure="mse", k=10)
+
+                        ridge.model.cv <- train(attendance ~., data=train, method = "ridge",
+                        trControl=trainControl(method = "cv", number = 10,
+                                               verboseIter = TRUE))
+plot(ridge.model.cv)
+plot(ridge.model.cv$glmnet.fit, 
+     xvar="lambda", label=TRUE)
+
+ridge.model.cv$lambda.min
+    #407.67
+ridge.model.cv$lambda.1se    #THIS IS OUR OPTIMAL LAMBDA
+    #781
+    #gives the simplist model but also lies within 1 SE of optimal value of Lambda
+
+coef(ridge.model.cv, s=781)
+    #shows ALL variables with many coefficients (not as sig coeff) pushed towards 0)
+    #coef based on optimal value of lambda
+
+predict.ridge.cv <- predict(ridge.model.cv,newx = testx, s=781, type= "response") 
+
+R2(predict.ridge.cv, testy)  #.7782
+RMSE(predict.ridge.cv, testy)    #2746
+
+#rebuild original model + predictions w/ optimal lambda
+ridge.model2 <- glmnet(trainx, trainy, alpha = 0, 
+                       lambda=781, family = "gaussian")
+
+predict.ridge2 <- predict(ridge.model2, testx)
+
+R2(predict.ridge2, testy)   #.778
+
+##########
+
+#ID top Influential Features
+coef(ridge.model2, s = 1033) %>%
+  tidy() %>%
+  filter(row != "(Intercept)") %>%
+  top_n(25, wt = abs(value)) %>%
+  ggplot(aes(value, reorder(row, value))) +
+  geom_point() +
+  ggtitle("Top influential variables") +
+  xlab("Coefficient") +
+  ylab(NULL)
+
+#####
+#Best Subset Selection
+
+regsubsets(attendance ~ ., TBRays, nvmax = 19)
+summary(regsubsets(attendance ~ ., TBRays, nvmax = 19))
+#a star (*) means the variable was included in the mock model
+#each model represents a model with one additional variable added to it
+#shows relative importance of each variable in a way
+
+#####
