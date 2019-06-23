@@ -1,0 +1,68 @@
+#Bootstrapping (great for tree models)
+
+#alternative CV form for RF
+#classification AND regression
+
+library(party)
+library(caret)
+library(tibble)
+library(mice)
+
+
+GameData <- mice(Game_by_Game_Data)
+GameData <- complete(GameData)
+summary(GameData)
+
+
+GameData1 <- GameData[, -1]
+GameData1 <- GameData1[, -1]
+
+
+#Tuning w/ Bootstrapping - Random Grid (increase number for more accuracy)
+train.control <- trainControl(method = "boot", number = 10, 
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+rf.boot <- train(Att~., data = GameData1, method = "ctree", 
+                    preProcess = c("center", "scale"),
+                    trControl=train.control, tuneLength = 100,
+                 na.action = na.omit)
+
+rf.boot$bestTune
+                    #mincriterion = .99
+
+#Tuning w/ Bootstrapping - Tune Grid (increase number for more accuracy)
+train.control <- trainControl(method = "boot", number = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "grid")
+
+tune.grid <- expand.grid(mtry = seq(10, 50, 1))   #don't be afraid to keep refining the tune grid
+
+rf.boot <- train(Att ~., 
+                 data = GameData1, 
+                 method = "rf", metric = "RMSE",
+                 tuneGrid = tune.grid, trControl = train.control,
+                 na.action = na.omit)
+
+print(rf.boot)   #mtry = 43
+
+ggplot(rf.boot)
+
+
+#Tuned Model
+
+rf.model <- randomForest(Att ~., data= GameData1, mtry = 43, ntree=500,
+                         importance = T, na.action=na.omit)
+
+cforest.model <- cforest(Att ~., data= GameData1, mtry = 43, ntree=500,
+                         na.action=na.omit)
+
+pred.result <- data.frame(predict(rf.model, newdata=GameData1, type="response"))
+pred.prob <- data.frame(predict(cforest.model, newdata=GameData1, type="response"))
+
+(pred.result - GameData1$Att)
+(pred.prob - GameData1$Att)
+
+
+#obviously can do this with binary problems as well.....
+
