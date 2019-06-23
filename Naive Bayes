@@ -1,0 +1,244 @@
+#NAIVE BAYES 
+#classification only
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV and variety of tuning parameters on ENTIRE dataset
+#step 3: retrieve optimal Tuning Parameters & get CV model's measure of error for later model comparison
+#step 4: rebuid model w/ optimal hyperparameters
+#step 5: repeat step 1 w/ tuned model
+
+library(bnclassify)
+library(naivebayes)
+library(MCMCpack)
+library(Bolstad)
+library(pscl)
+library(monomvn)
+library(BAS)
+library(arm)
+library(e1071)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(AUC)
+library(rattle)
+library(ROCR)
+library(glmnet)
+
+set.seed(999)
+
+#Create Training/Testing Datasets, Matrices and Set Seed
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -8])   #all factors except Y
+testx <- as.matrix(test[, -8])     
+
+trainy <- as.double(as.matrix(train[, 8]))  #only Y
+testy <- as.double(as.matrix(test[, 8]))
+
+
+#visualizations
+train %>%
+  filter(opposing_team == "10") %>%
+  select_if(is.numeric) %>%
+  cor() %>%
+  corrplot::corrplot()
+
+train %>%
+  select_if(is.numeric) %>%
+  cor() %>%
+  corrplot::corrplot()
+
+train %>% 
+  gather(metric, value) %>% 
+  ggplot(aes(value, fill = metric)) + 
+  geom_density(show.legend = FALSE) + 
+  facet_wrap(~ metric, scales = "free")
+
+#METHOD 1 - naiveBayes
+#original model
+nb.model <-naiveBayes(factor(weekend) ~., data = train)
+
+nb.model        #will return matrix of priors + conditional probabilities for each variable
+
+nb.model$apriori
+
+predict.prob <- data.frame(predict(nb.model, test, type = "raw"))
+predict.class <- predict(nb.model, test, type = "class")
+
+head(data.frame("Prediction Prob" = predict.prob$X1, 
+                "Prediction Class" = predict.class,
+                "Actual" = testy))
+
+sum(predict.class == testy)/nrow(test)   #73.4% accurate
+
+
+#Cross Validation!!!!!  method = "nb" or "naive_bayes"
+      #tuning parameters = usekernel and fL [laplace] and adjust
+
+#set up tuning grid(s)
+search.grid <- expand.grid(
+  usekernel = c(TRUE,FALSE),
+  fL = 0:5,
+  adjust = seq(0,5, by=1))
+
+nb.tune <- train(factor(weekend) ~., train, method = "nb", trControl=train.control,
+                  tuneGrid = search.grid)
+                  #preProc = c("BoxCox", "center", "scale", "pca"))
+
+nb.tune
+      #usekernel TRUE v FALSE and respective Accuracy/Kappa Levels 
+      #fL of 0 [laplace]
+      #usekernel FALSE
+      #adjust of 0
+
+#ORRR
+
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+cv.nb.model <- train(trainx, factor(trainy), method = "naive_bayes", 
+                     preProcess = c("center", "scale"),
+                     tunelength=50, trControl=train.control)
+
+print(cv.nb.model)
+      #usekernel TRUE v FALSE and respective Accuracy/Kappa Levels
+      #Accuracy (max of 75%)
+      #Kappa (max of 0.47)
+      #laplace of 0
+      #adjust of 1
+cv.nb.model$bestTune
+      #best fL is 0
+      #best usekernel is FALSE
+      #best adjust is 1
+
+#...for both CV models
+
+#...Return the Top 6 Models
+head(cv.nb.model$results %>%
+       top_n(5, wt=Accuracy) %>%
+       arrange(desc(Accuracy)))
+head(nb.tune$results %>%
+       top_n(5, wt=Accuracy) %>%
+       arrange(desc(Accuracy)))
+
+#...Plot search grid results.....laplace correction vs accuracy [Bandwidth Adj is equiv to Adj=X the optimal model returned for us]
+plot(nb.tune)
+
+#...Results for Best Model
+confusionMatrix(nb.tune)
+    #avg accuracy of 75%
+confusionMatrix(cv.nb.model)
+    #avg accuracy of 74.8%
+
+#CREATE TUNED MODELS
+#!!!
+
+#####
+
+#ROC/AUC [only works w/ probabilities]
+prediction(predict.prob$X1, testy) %>%
+  performance(measure = "tpr", x.measure = "fpr") %>%
+  plot(colorize=T)
+
+prediction(predict.prob$X1, testy) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+  #0.7844 *** pay attn to this when comparing models
+
+####
+
+#ROC Chart + Lifting [only works w/ probabilities]
+pred <- prediction(predict.prob$X1, testy)
+perf <- performance(pred, "tpr", "fpr")
+    #calculates True Positive and False Positive Rates
+plot(perf, main="ROC Curve", colorize=T)
+
+perf.lift <- performance(pred, "lift", "rpp")
+plot(perf.lift, main="lift curve", colorize=T)
+
+#Calculating KS Stats
+###NOTE: do NOT use lifted performance creation when calculating this
+ks1.tree <- max(attr(perf, "y.values")[[1]]-
+                  (attr(perf, "x.values")[[1]]))
+ks1.tree     #0.46
+
+###########
+
+
+#METHOD 2 - naive_bayes
+nb.model <- naive_bayes(factor(weekend) ~., train)
+    #can specify laplace, usekernel, and prior
+
+nb.model
+    #will return matrix of priors + conditional probabilities for each variable
+
+nb.model$prior
+nb.model$usekernel
+nb.model$laplace
+
+plot(nb.model)
+
+predict.prob<- data.frame(predict(nb.model, test, type="prob"))
+predict.class <- predict(nb.model, test, type="class")
+
+head(data.frame("Prediction Prob" = predict.prob$X1, 
+                "Prediction Class" = predict.class,
+                "Actual" = testy))
+
+sum(predict.class == testy)/nrow(test)   #73.4% accurate
+
+#CV!!!
+#tuning parameters = fL (laplace), usekernel, and adjust
+
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+cv.nb.model <- train(trainx, factor(trainy), method = "naive_bayes", 
+                     preProcess = c("center", "scale"),
+                     tunelength=50, trControl=train.control)
+
+print(cv.nb.model)
+
+#CREATE TUNED MODELS
+#!!!
+
+#####
+
+#ROC/AUC [only works w/ probabilities]
+prediction(predict.prob$X1, testy) %>%
+  performance(measure = "tpr", x.measure = "fpr") %>%
+  plot(colorize=T)
+
+prediction(predict.prob$X1, testy) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+  #0.7844 *** pay attn to this when comparing models
+
+####
+
+#ROC Chart + Lifting [only works w/ probabilities]
+pred <- prediction(predict.prob$X1, testy)
+perf <- performance(pred, "tpr", "fpr")
+    #calculates True Positive and False Positive Rates
+plot(perf, main="ROC Curve", colorize=T)
+
+perf.lift <- performance(pred, "lift", "rpp")
+plot(perf.lift, main="lift curve", colorize=T)
+
+#Calculating KS Stats
+###NOTE: do NOT use lifted performance creation when calculating this
+ks1.tree <- max(attr(perf, "y.values")[[1]]-
+                  (attr(perf, "x.values")[[1]]))
+ks1.tree     #0.46
+
+
+
+
+
+
