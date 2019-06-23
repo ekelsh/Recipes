@@ -1,0 +1,204 @@
+#SUPPORT VECTOR MACHINE (SVM) - classification
+#[for both classification and regression]
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV and variety of tuning parameters on ENTIRE dataset
+#step 3: retrieve optimal Tuning Parameters & get CV model's measure of error for later model comparison
+#step 4: rebuid model w/ optimal hyperparameters
+#step 5: repeat step 1 w/ tuned model
+
+library(kernel)
+library(Bolstad)
+library(pscl)
+library(monomvn)
+library(e1071)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(AUC)
+library(rattle)
+library(ROCR)
+library(h2o)
+library(glmnet)
+library(GGally)
+library(tidyverse)
+library(ISLR)
+library(RColorBrewer)
+
+set.seed(999)
+
+#Create Training/Testing Datasets, Matrices and Set Seed
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -8])   #all factors except Y
+testx <- as.matrix(test[, -8])     
+
+trainy <- as.double(as.matrix(train[, 8]))  #only Y
+testy <- as.double(as.matrix(test[, 8]))
+
+
+###EXAMPLE 1
+#original model(s)
+svm.model.linear <-svm(factor(weekend) ~ ., data = train, kernel="linear", scale = F)
+svm.model.poly <-svm(factor(weekend) ~ ., data = train, kernel="poly")
+svm.model.rad <-svm(factor(weekend) ~ ., data = train, kernel="radial")
+svm.model.sig <-svm(factor(weekend) ~ ., data = train, kernel="sigmoid")
+      #type = "C" for classification, "eps" for regression [machine learns which one it should do so ignore this step]
+      #kernel = the kernel used in training/predicting
+            #"linear" ... u*v
+            #"polynomial" ... (gamma*u*v + coef())^degree
+            #"radial" ... exp(-gamma*|u-v|^2)
+            #"sigmoid" ... tanh(gamma*u*v+coef())
+                 #degree = parameter needed for kernel of type "polynomial"
+                 #gamma = parameter needed for all kernels except "linear" [defalt is 1/(data dimenstion)] 
+                        #GAMMA = SIGMA when tuning
+                 #coef() = parameter needed for kernels of type "polynomial" and "sigmoid"...default is 0
+      #scale = TRUE scales variables  
+      #cost = the cost of constraints violation (default is 1)
+                        #COST = C when tuning
+      #na.action = na.omit
+
+summary(svm.model.linear)
+      #returns SVM type and SVM kernel
+      #returns the cost (1) and gamma[sigma] (0.142)
+      #returns the number of support vectors (172)
+
+svm.model.linear$degree
+svm.model.linear$fitted
+svm.model.linear$cost
+svm.model.linear$kernel
+svm.model.linear$gamma
+svm.model.linear$nu
+svm.model.linear$epsilon
+svm.model.linear$scaled
+svm.model.linear$sparse
+svm.model.linear$nSV      #number of Support Vectors
+
+#predict output
+svm.predict.linear <- predict(svm.model.linear, test)
+svm.predict.poly <- predict(svm.model.poly, test)
+svm.predict.rad <- predict(svm.model.rad, test)
+svm.predict.sig <- predict(svm.model.sig, test)
+
+sum(svm.predict.linear == test$weekend)/nrow(test)          #88.7%
+sum(svm.predict.poly == test$weekend)/nrow(test)            #83.7%
+sum(svm.predict.rad == test$weekend)/nrow(test)             #85.2%
+sum(svm.predict.sig == test$weekend)/nrow(test)             #82.8%
+
+head(data.frame("Linear" = svm.predict.linear,
+                "Poly" = svm.predict.poly,
+                "Radial" = svm.predict.rad,
+                "Sigmoid" = svm.predict.sig,
+                "Actual"= test$weekend))
+
+#CROSS VALIDATION!!!!! method="svmRadial" or "svmLinear" or whatever kernel I choose to use
+      #tune par Linear = C (cost)
+      #tune par Poly = degree and scale
+      #tune par Radial = sigma and C (cost)
+
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+svm.cv.linear <- train(factor(weekend) ~., data=train, method = "svmLinear",
+                       preProcess = c("center", "scale"),
+                       tunelength = 50, trControl=train.control)
+
+svm.cv.rad <- train(factor(weekend) ~., data=train, method = "svmRadial", 
+                    preProcess = c("center", "scale"),
+                    tunelength = 50, trControl=train.control)
+ 
+svm.cv.linear
+    #max accuracy 88.6%
+    #best cost parameter (C) = 32.28
+    #max Kappa of 0.767
+    
+svm.cv.rad
+svm.cv.rad$bestTune
+    #optimal cost parameter (C) = 0.50 [level w/ highest accuracy]
+    #max accuracy = 87.1%  [also has the highest Kappa value]
+    #optimal sigma = 0.076
+
+svm.cv.linear$finalModel
+    #cost parameter....C=32.28
+    #num of support vectors 153
+    #training error 0.110
+
+svm.cv.rad$finalModel
+    #cost parameter......tells the SVM how much we want to avoid misclassifying
+    #sigma of 0.076
+    #num of support vectors 332
+    #training error 0.09
+
+#tune the original model(s)
+svm.model.rad <-svm(factor(weekend) ~ ., data = train, 
+                       kernel="radial", cost=0.51, gamma=0.076)
+svm.model.linear <-svm(factor(weekend) ~ ., data = train, 
+                      kernel="linear", cost=32.28)
+
+svm.predict.linear <- predict(svm.model.linear, test)
+svm.predict.rad <- predict(svm.model.rad, test)
+
+sum(svm.predict.linear == test$weekend)/nrow(test)   #88.7%   
+sum(svm.predict.rad == test$weekend)/nrow(test)      #87.2%   
+
+
+
+###EXAMPLE 2 - playing around with the Cost parameter w/ Linear/Radial Kernels
+set.seed (999)
+
+#LINEAR
+svmfit <- svm(factor(weekend)~., data = train, kernel = "linear", cost = 10)
+
+kernfit <- ksvm(trainx, trainy, type = "C-svc", kernel = 'vanilladot', C = 100)
+
+#...but how do we know the optimal C parameter
+
+# find optimal cost of misclassification
+tune.out <- tune(svm, factor(weekend)~., data = train, kernel = "linear",
+                 ranges = list(cost = c(0.001, 0.01, 0.1, 1, 5, 10, 100)))
+# extract the best model
+bestmod <- tune.out$best.model
+bestmod
+      #cost = .1
+      #SVM-Kernel = linear
+      #gamma = 0.1428571
+      #number of support vectors = 242
+
+# Create a table of misclassified observations
+ypred <- predict(bestmod, test)
+misclass <- table(predict = ypred, truth = test$weekend)
+misclass
+    #87.2%
+
+#RADIAL
+svmfit1 <- svm(factor(weekend)~., data = train, kernel = "radial", gamma = 1, cost = 1)
+
+kernfit1 <- ksvm(trainx, trainy, type = "C-svc", kernel = 'rbfdot', C = 1, scaled = c())
+
+# tune model to find optimal cost, gamma values
+tune.out <- tune(svm, factor(weekend)~., data = train, kernel = "radial",
+                 ranges = list(cost = c(0.1,1,10,100,1000),
+                               gamma = c(0.5,1,2,3,4)))
+# show best model
+tune.out$best.model
+    #cost = 10
+    #SVM-Kernel = radial
+    #gamma = 0.5
+    #number of support vectors = 347
+
+#validate model performance
+ypred1 <- predict(tune.out$best.model, test)
+misclass1 <- table(predict = ypred1, truth = test$weekend)
+misclass1
+    #78.3%
+
+
+
+
+
+
