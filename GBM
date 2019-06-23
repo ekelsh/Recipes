@@ -1,0 +1,595 @@
+#Gradient Boosting Machines (GBM and XGBOOST)
+
+library(gbm)
+library(MASS)
+library(rsample)
+library(xgboost)
+library(caret)
+library(h2o)
+library(lime)
+library(pdp)
+library(vtreat)
+library(rsample)
+library(vip)
+library(ggplot2)
+
+set.seed(999)
+
+############################
+#GRADIENT BOOSTED MODEL (GBM) - from scratch
+#fit original model
+gbm.model <- gbm(attendance ~., data=train, 
+                   distribution = "gaussian",
+                   n.trees = 10000,
+                   shrinkage = 0.001,
+                   interaction.depth = 1,
+                 cv.folds = 10,
+                 n.cores = NULL,
+                 verbose = FALSE)
+    #shrinkage parameter = lambda [the learning rate]
+    #interaction depth = total # of splits we want to do
+
+    #distribution = "gaussian" (regression)
+    #distribution = "bernoulli" (for 0 or 1 outcomes)         
+    #distribution = "adaboost" 
+    #distribution = "poisson" (for coutn outcomes)
+    #distribution = "pairwise" or "quantile" (for ranking measures)
+
+gbm.model
+    #returns the best CV iteration (10000)
+    #returns the # of variables with non 0 influence (6)
+
+gbm.model$cv.fitted
+gbm.model$initF
+gbm.model$oobag.improve
+
+gbm.model$trees
+gbm.model$bag.fraction
+gbm.model$train.fraction
+
+sqrt(min(gbm.model$cv.error))   #2679
+    #to get the MSE and compute the RMSE
+gbm.perf(gbm.model, method = "cv")
+    #plots the loss fxn as a result of n trees added to the ensemble (10,000)
+
+#Choice A - keep incrementally tuning the model
+gbm.model2 <- gbm(attendance ~., data=train, 
+                 distribution = "gaussian",
+                 n.trees = 5000,
+                 shrinkage = 0.1,
+                 interaction.depth = 3,
+                 cv.folds = 10,
+                 n.cores = NULL,
+                 verbose = FALSE)
+      #increased the learning rate (shrinkage) to take larger steps down the gradient decent         
+      #reduced the number of trees since we're reducing the learning rate
+      #increasing the depth of each tree to 3
+
+min_MSE <- which.min(gbm.model2$cv.error)
+    #find index for n trees with min CV Error
+sqrt(min(gbm.model2$cv.error))   #2679 --> 2593
+    #to get the MSE and compute the RMSE
+gbm.perf(gbm.model2, method = "cv")
+    #plots the loss fxn as a result of n trees added to the ensemble
+    #103
+
+#Choice B - find optimal hyperparameters via grid search
+# create tuning grid
+hyper_grid <- expand.grid(
+  shrinkage = c(.01, .05, .1, .2, .3),
+  interaction.depth = c(1, 3, 4, 5, 7),
+  n.minobsinnode = c(5, 7, 10, 12, 15),   #minimum number of observations allowed in the trees terminal nodes
+  bag.fraction = c(.65, .7, .8, .9, 1),    #induces stochastic gradient descent
+  optimal_trees = 0,               # a place to dump results
+  min_RMSE = 0                     # a place to dump results
+)
+                                   #creates hyperparameter grid
+
+nrow(hyper_grid)
+      #number of total combinations
+
+# randomize data
+random_index <- sample(1:nrow(TBRays), nrow(TBRays))
+random_TB_train <- TBRays[random_index, ]
+
+# create grid search
+for (i in 1:nrow(hyper_grid)) {
+
+  set.seed (999)                #reproducibility  
+  
+  gbm.tune <- gbm(attendance ~.,
+                   distribution = "gaussian",
+                   data=random_TB_train,
+                   n.trees = 5000,
+                   interaction.depth = hyper_grid$interaction.depth[i],
+                   shrinkage = hyper_grid$shrinkage[i],
+                   n.minobsinnode = hyper_grid$n.minobsinnode[i],
+                   bag.fraction = hyper_grid$bag.fraction[i],
+                   train.fraction = .75,
+                   n.cores = NULL,    #will use all cores by default
+                   verbose = FALSE)
+  
+  hyper_grid$optimal_trees[i] <- which.min(gbm.tune$valid.error)  #adds min trees  to grid
+  hyper_grid$min_RMSE[i] <- sqrt(min(gbm.tune$valid.error))       #adds min training error to grid
+}
+
+hyper_grid %>%
+  dplyr::arrange(min_RMSE) %>%
+  head(10)
+    #shrinkage = 0.2
+    #interaction.depth = 1
+    #n.minobsinnode = 10
+    #bag.fraction = 0.8
+    #optimal_trees = 314
+    #min_RMSE = 2420.499
+
+#keep tuning grid, adjusting the parameters to values that perform the best in previous grid searches
+#once we have found our top model, we train a model with those specific parameters
+#then train a CV model to provide a more robust error estimate with a larger number of trees (round up from optimal value)
+
+# create final model
+gbm.final <- gbm(attendance ~., data=TBRays, 
+                  distribution = "gaussian",
+                  n.trees = 314,
+                  shrinkage = 0.2,
+                  interaction.depth = 1,
+                  n.minobsinnode = 10,
+                  bag.fraction = .8,
+                  n.cores = NULL,
+                  verbose = FALSE)
+
+gbm.final
+
+sqrt(min(gbm.final$train.error))   #2593 --> 2192
+
+# visualizing
+#after rerunning our final model, we want to understand the variables that have the largest influence
+
+#Variable Importance Plots
+summary(gbm.final, cBars=5)  #limits chart to 5 variables
+relative.influence(gbm.final)
+
+summary(gbm.final, cBars=5,
+        method=relative.influence,
+        las=2)
+
+vip::vip(gbm.final)
+
+#Partial dependence plots (PDPs) and Individual Conditional Expectation (ICE)
+
+#PDP
+#how does the response variable change based on these variables
+gbm.final %>%
+  partial(pred.var = "home_win_pct", 
+          n.trees = gbm.final$n.trees, 
+          grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = train) +
+  scale_y_continuous(labels = scales::number)
+
+#ICE
+#regular
+ice1 <- gbm.final %>%
+  partial(
+    pred.var = "home_win_pct", 
+    n.trees = gbm.final$n.trees, 
+    grid.resolution = 100,
+    ice = TRUE
+  ) %>%
+  autoplot(rug = TRUE, train = train, alpha = .1) +
+  ggtitle("Non-centered") +
+  scale_y_continuous(labels = scales::number)
+
+ice1
+
+#centered
+
+ice2 <- gbm.final %>%
+  partial(
+    pred.var = "home_win_pct", 
+    n.trees = gbm.final$n.trees, 
+    grid.resolution = 100,
+    ice = TRUE
+  ) %>%
+  autoplot(rug = TRUE, train = train, alpha = .1, center = TRUE) +
+  ggtitle("Centered") +
+  scale_y_continuous(labels = scales::number)
+
+ice2
+
+#shows both together
+gridExtra::grid.arrange(ice1, ice2, nrow = 1)
+
+#LIME
+#understanding variable effects [creates model explanation functions based on training data]
+#lime can be performed w/ caret models, xgboost models, h20 models, and gbm models
+
+#first, need to define model type and prediction method
+model_type.gbm <- function(x, ...) {
+  return("regression")
+}
+
+predict_model.gbm <- function(x, newdata, ...) {
+  pred <- predict(x, newdata, n.trees = x$n.trees)
+  return(as.data.frame(pred))
+}
+
+#takes 2 cases in our testing data...
+local.obs <- test[1:2, ]
+
+#creates a model explanaation function based on the training data
+explainer <- lime(train, gbm.final)
+explanation <- explain(local.obs, explainer, n_features = 5)
+
+plot_features(explanation)
+    #shows the top 5 factors that predicted case 1 and case 2 in the testing data
+    #shows wether the factors predicted these cases in a positive or negative way
+
+# predicting
+pred <- predict(gbm.final, n.trees = gbm.final$n.trees, test)
+
+caret::RMSE(pred, test$attendance)
+## 2315.7 [close to what we got from our final model]
+
+
+
+############################
+#XGBOOST - 10x faster than traditional GBM
+
+#...data prep w/ vtreat
+features <- setdiff(names(train), "attendance")
+
+treatplan <- vtreat::designTreatmentsZ(train, features, verbose = FALSE)
+      #Create the treatment plan from the training data
+
+new_vars <- treatplan %>%
+  magrittr::use_series(scoreFrame) %>%        
+  dplyr::filter(code %in% c("clean", "lev")) %>% 
+  magrittr::use_series(varName)     
+  # Get the "clean" variable names from the scoreFrame
+
+features_train <- vtreat::prepare(treatplan, train, varRestriction = new_vars) %>% as.matrix()
+response_train <- train$attendance
+    # Prepare the training data
+
+features_test <- vtreat::prepare(treatplan, test, varRestriction = new_vars) %>% as.matrix()
+response_test <- test$attendance
+    # Prepare the test data
+
+dim(features_train)
+    # dimensions of one-hot encoded data
+    ## [1] 607  7
+dim(features_test)
+    ## [1] 203 7
+
+
+#train the model (with xgb.cv)
+set.seed(999)
+
+#original model....
+xgb.fit1 <- xgb.cv(
+  data = features_train,
+  label = response_train,
+  nrounds = 1000,              #the maximum number of iterations
+  nfold = 5,                   #number of k folds
+  objective = "reg:linear",    #binary:logistic for classification....reg:linear for linear regression
+  verbose = 0                  #doesn't print the stats during the process (not super important)
+)
+                               #default....learning rate (eta) = 0.3, tree depth (max_depth) = 6, % of training data to sample for each tree (subsample...equivalent to gbm's bag.fraction) = 100%
+
+#...assessing min RMSE and optimal trees for both training data and CV error
+xgb.fit1$evaluation_log %>%
+  dplyr::summarise(
+    ntrees.train = which(train_rmse_mean == min(train_rmse_mean))[1],
+    rmse.train   = min(train_rmse_mean),
+    ntrees.test  = which(test_rmse_mean == min(test_rmse_mean))[1],
+    rmse.test   = min(test_rmse_mean)
+  )
+        #to get the number of trees that minimize error
+        #437 trees, 0.005 RMSE for train
+        #19 trees, 2831.7 RMSE for test
+
+ggplot(xgb.fit1$evaluation_log) +
+  geom_line(aes(iter, train_rmse_mean), color = "red") +
+  geom_line(aes(iter, test_rmse_mean), color = "blue")
+        #plot error vs number of trees
+
+#early stopping model...
+xgb.fit2 <- xgb.cv(
+  data = features_train,
+  label = response_train,
+  nrounds = 1000,              
+  nfold = 5,                  
+  objective = "reg:linear",    
+  verbose = 0,
+  early_stopping_rounds = 10     #stop if no improvement for 10 consecutive trees
+)
+
+ggplot(xgb.fit2$evaluation_log) +
+  geom_line(aes(iter, train_rmse_mean), color = "red") +
+  geom_line(aes(iter, test_rmse_mean), color = "blue")
+
+
+#TUNING!!!
+#create short parameter list
+params <- list(
+  eta = .1,                 #learning rate
+  max_depth = 5,            #tree depth
+  min_child_weight = 2,     #min observations needed in each terminal node
+  subsample = .8,           #% of training data to sample per tree
+  colsample_bytree = .9     #% of columns to sample from for each tree
+)
+
+#train model
+xgb.fit3 <- xgb.cv(
+  params = params,
+  data = features_train,
+  label = response_train,
+  nrounds = 1000,
+  nfold = 5,
+  objective = "reg:linear",  
+  verbose = 0,               
+  early_stopping_rounds = 10 
+)
+
+#assess results
+xgb.fit3$evaluation_log %>%
+  dplyr::summarise(
+    ntrees.train = which(train_rmse_mean == min(train_rmse_mean))[1],
+    rmse.train   = min(train_rmse_mean),
+    ntrees.test  = which(test_rmse_mean == min(test_rmse_mean))[1],
+    rmse.test   = min(test_rmse_mean)
+  )
+    #77 trees, 984 RMSE for train
+    #67 trees, 2308 RMSE for test
+
+#create larger hyperparameter grid [just like GBM above]
+hyper_grid <- expand.grid(
+  eta = c(.01, .05, .1, .3),
+  max_depth = c(1, 3, 5, 7),
+  min_child_weight = c(1, 3, 5, 7),
+  subsample = c(.65, .8, 1), 
+  colsample_bytree = c(.8, .9, 1),
+  optimal_trees = 0,               # a place to dump results
+  min_RMSE = 0                     # a place to dump results
+)
+
+nrow(hyper_grid)
+
+#perform grid search...performs same loop procedure for this XGBoost model
+for(i in 1:nrow(hyper_grid)) {
+  
+  params <- list(            # create parameter list
+    eta = hyper_grid$eta[i],
+    max_depth = hyper_grid$max_depth[i],
+    min_child_weight = hyper_grid$min_child_weight[i],
+    subsample = hyper_grid$subsample[i],
+    colsample_bytree = hyper_grid$colsample_bytree[i]
+  )
+  
+  set.seed(123)               # reproducibility
+  
+  xgb.tune <- xgb.cv(         # train model
+    params = params,
+    data = features_train,
+    label = response_train,
+    nrounds = 5000,
+    nfold = 5,
+    objective = "reg:linear",  
+    verbose = 0,               
+    early_stopping_rounds = 10 
+  )
+  
+  # add min training error and trees to grid
+  hyper_grid$optimal_trees[i] <- which.min(xgb.tune$evaluation_log$test_rmse_mean)
+  hyper_grid$min_RMSE[i] <- min(xgb.tune$evaluation_log$test_rmse_mean)
+}
+
+hyper_grid %>%
+  dplyr::arrange(min_RMSE) %>%
+  head(10)
+
+#....then perform more grid searches to hone in on the parameters that appear to influence the model the most
+
+#create final parameter list!!!
+params <- list(
+  eta = 0.10,
+  max_depth = 1,
+  min_child_weight = 3,
+  subsample = .65,
+  colsample_bytree = 0.9
+)
+
+
+#train final model!!!
+xgb.final <- xgboost(
+  params = params,
+  data = features_train,
+  label = response_train,
+  nrounds = 1000,
+  objective = "reg:linear",
+  verbose = 0
+)
+
+#VISUALIZING!!!
+
+#step 1 = create importance matrix
+importance_matrix <- xgb.importance(model = xgb.final)
+
+#step 2 = create variable importance plot
+xgb.plot.importance(importance_matrix, top_n = 10, measure = "Gain")
+      #will plot the top 10 variables in regards to their importance in predicting Y
+     
+      #measure 1 = gain...the relative contribution of the corresponding feature to the model calculated by taking each feature's contrib for each tree in the model (same as GBM's Relative.Influence)
+      #measure 2 = cover...the relative # of observations related to this feature
+      #measure 3 = frequency...% representing the relative # of times a particular feature occurs in the tree model
+
+
+#PDP and ICE Plots
+pdp <- xgb.final %>%
+  partial(pred.var = "home_win_pct", n.trees = 1000, 
+          grid.resolution = 100, train = features_train) %>%
+  autoplot(rug = TRUE, train = features_train) +
+  scale_y_continuous(labels = scales::number) +
+  ggtitle("PDP")
+
+ice <- xgb.final %>%
+  partial(pred.var = "home_win_pct", n.trees = 1000, 
+          grid.resolution = 100, train = features_train, ice = TRUE) %>%
+  autoplot(rug = TRUE, train = features_train, alpha = .1, center = TRUE) +
+  scale_y_continuous(labels = scales::number) +
+  ggtitle("ICE")
+
+gridExtra::grid.arrange(pdp, ice, nrow = 1)
+
+
+#LIME (for explaination charts)
+# takes 2 cases in our testing data...
+local.obs <- test[1:2, ]
+
+# one-hot encode the local observations to be assessed.
+local_obs_onehot <- vtreat::prepare(treatplan, local.obs, varRestriction = new_vars)
+
+# apply LIME
+explainer <- lime(data.frame(features_train), xgb.final)
+explanation <- explain(local_obs_onehot, explainer, n_features = 5)
+plot_features(explanation)
+      #shows the top 5 factors that predicted case 1 and case 2 in the testing data
+      #shows wether the factors predicted these cases in a positive or negative way
+
+#PREDICTING
+# predict values for test data
+pred <- predict(xgb.final, features_test)
+
+# results
+caret::RMSE(pred, response_test)
+      ## [1] 2654.611
+
+
+
+############################
+#GRADIENT BOOSTED MODEL - boosting an existing model
+#build equation
+ridge.model <- linearRidge(attendance ~ ., data =TBRays)
+
+#use GBM fxn
+gbm.model <- gbm(formula = ridge.model, distribution = "gaussian",
+                 data = TBRays, var.monotone = NULL, n.trees = 1000,
+                 interaction.depth = 1, n.minobsinnode = 100, shrinkage = 0.1,
+                 bag.fraction = 0.5, train.fraction = 1, cv.folds = 5,
+                 keep.data = TRUE, verbose = FALSE, class.stratify.cv = NULL,
+                 n.cores = NULL)
+
+#analyze GBM fxn
+summary(gbm.model)
+
+sqrt(min(gbm.model$train.error))   #2818
+
+#check performance of model
+#estimates the optimal number of boosting iterations for a gbm object and optionally plots various performane measures
+#method indicates the method used to estimate the optimal number of boosted iterations
+#small shrinkage (learning rate) will require more iterations to achieve minial loss
+best.att <- gbm.perf(gbm.model, method = "OOB")
+print(best.att)      #computes out-of-bag estimate
+
+best.att <- gbm.perf(gbm.model, method = "cv")
+print(best.att)     #estimates the number of iterations using cross-validation
+
+#print 1st and last tree for curiosity
+print(pretty.gbm.tree(gbm.model, i.tree = 1))
+print(pretty.gbm.tree(gbm.model, i.tree = gbm.model$n.trees))
+
+# create tuning grid
+hyper_grid <- expand.grid(
+  shrinkage = c(.01, .05, .1, .2, .3),
+  interaction.depth = c(1, 3, 4, 5, 7),
+  n.minobsinnode = c(5, 7, 10, 12, 15),   #minimum number of observations allowed in the trees terminal nodes
+  bag.fraction = c(.65, .7, .8, .9, 1),    #induces stochastic gradient descent
+  optimal_trees = 0,               # a place to dump results
+  min_RMSE = 0                     # a place to dump results
+)
+
+# create grid search...THIS TAKES 6 HOURS
+for (i in 1:nrow(hyper_grid)) {
+  
+  set.seed (999)                #reproducibility  
+  
+  gbm.tune <- gbm(formula=ridge.model,
+                  distribution = "gaussian",
+                  data=train,
+                  n.trees = 5000,
+                  interaction.depth = hyper_grid$interaction.depth[i],
+                  shrinkage = hyper_grid$shrinkage[i],
+                  n.minobsinnode = hyper_grid$n.minobsinnode[i],
+                  bag.fraction = hyper_grid$bag.fraction[i],
+                  train.fraction = .75,
+                  n.cores = NULL,
+                  verbose = FALSE)
+  
+  hyper_grid$optimal_trees[i] <- which.min(gbm.tune$valid.error)  #add min trees to grid
+  hyper_grid$min_RMSE[i] <- sqrt(min(gbm.tune$valid.error))       #add min training error to grid
+}
+
+hyper_grid %>%
+  dplyr::arrange(min_RMSE) %>%
+  head(10)
+      #min RMSE w/.....2328 trees, .65 bag fraction, 7 n.minobisinnode, 1 interaction depth, .01 shrinkage
+
+#keep tuning grid, adjusting the parameters to values that perform the best in previous grid searches
+#once we have found our top model, we train a model with those specific parameters
+#then train a CV model to provide a more robust error estimate with a larger number of trees (round up from optimal value)
+
+# create final model
+gbm.final <- gbm(formula = ridge.model, data=TBRays, 
+                 distribution = "gaussian",
+                 n.trees = 2328,
+                 shrinkage = 0.01,
+                 interaction.depth = 1,
+                 n.minobsinnode = 7,
+                 bag.fraction = .65,
+                 n.cores = NULL,
+                 verbose = FALSE)
+
+gbm.final
+
+sqrt(min(gbm.final$train.error))   #2818 --> 2293
+
+#PDP and ICE plots
+
+#Predict on the new data using the "best" number of trees (using the link scale)
+pred <- predict(gbm.final, newdata = test, n.trees = gbm.final$n.trees)
+        #type = response...gives predicted probabilities (binomial)
+        #type = terms...gives a matrix of the fitted values (y hat) of each term in the model fomula on the linear predictor scale
+        #type = link....for scale variables
+
+RMSE(pred, testy)
+        #2363
+
+#construct univariate partial dependence plots
+att1 <- plot(gbm.model, i.var = 1, n.trees = best.att)  #takes 1st variable in attendance equation (home_win_pct)
+att2 <- plot(gbm.model, i.var = 2, n.trees = best.att)  #takes 2nd variable in attendance equation (away_win_pct)
+att3 <- plot(gbm.model, i.var = 3, n.trees=best.att)
+
+grid.arrange(att1, att2, att3, ncol = 3)  #puts both grids side by side
+
+#construct bivariate partial dependence plots
+plot(gbm.model, i.var = 1:2, n.trees = best.att)     #home% on x, away% on y
+plot(gbm.model, i.var = 2:3, n.trees = best.att)     #away% on x, bobblehead on y
+plot(gbm.model, i.var = c(1,4), n.trees = best.att)  #home% on x, temp on y
+
+#construct trivariate partial dependence plots
+plot(gbm.model, i.var = c(1, 2, 4), n.trees = best.att,
+     continuous.resolution = 20)
+plot(gbm.model, i.var = c(1, 3, 6), n.trees = best.att,
+     continuous.resolution = 20)
+
+#to add more boosting iterations to the ensemble
+gbm.model2 <- gbm.more(gbm.model, n.new.trees = 100, verbose=FALSE)
+
+
+
+
+
+
+
+
+
