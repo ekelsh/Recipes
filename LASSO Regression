@@ -1,0 +1,106 @@
+#LASSO REGRESSION
+#Alpha controls the mix of the 2 penalties  (between 0 [ridge] and 1 [lasso])
+#Lambda controls the amount of penalization (shrinkage)
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV and variety of tuning parameters on ENTIRE dataset
+#step 3: retrieve optimal Tuning Parameters & get CV model's measure of error for later model comparison
+#step 4: rebuid model w/ optimal hyperparameters
+#step 5: repeat step 1 w/ tuned model
+
+library(ridge)
+library(AUC)
+library(car)
+library(glmnet)
+library(lmtest)
+library(RcmdrMisc)
+library(caret)
+library(dplyr)
+library(broom)
+library(modelr)
+
+set.seed(999)
+
+#Create Training/Testing Datasets and Matrices
+set.seed(999)    #set seed to replicate results
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -7])  #all variables besides Y / string variables
+testx <- as.matrix(test[, -7])
+
+trainy <- as.double(as.matrix(train[, 7]))  #represents the Y in question
+testy <- as.double(as.matrix(test[, 7]))
+
+
+#original model
+lasso.model <- glmnet(trainx, trainy, alpha = 1, family= "gaussian")    
+      #family = "gaussian", "binomial", "poisson", "multinomial", "cox"
+      #alpha = 1 for LASSO, alpha=0 for ridge
+      #intercept = TRUE to fit the intercept (default is TRUE)
+      #dfmax= max number of variables ever to be nonzero
+
+coef(lasso.model)
+plot(lasso.model, xvar="lambda")
+
+lasso.model$lambda
+
+#Cross Validation!!! to get optimal lambda 
+      #tuning parameter = lambda
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+cv.lasso.model <- train(trainx, factor(trainy), method = "lasso", 
+                        preProcess = c("center", "scale"),
+                        tunelength=50, trControl=train.control)
+#or
+
+cv.lasso.model <- cv.glmnet(trainx, trainy, alpha = 1, k=10,
+                            family='gaussian', type.measure="mse")
+      #type.measure = ...used for cross validation
+      #"auc" for 2-class logistic regression ONLY and gives area under ROC curve [logistic]
+      #"mse" or "mae" measures the deviation from the fitted mean to the response [regression]
+
+cv.lasso.model$glmnet.fit
+cv.lasso.model$lambda.min   #35.45
+cv.lasso.model$lambda.1se   #250.15    OPTIMAL LAMBDA
+
+coef(cv.lasso.model, s=cv.lasso.model$lambda.1se)
+
+plot(cv.lasso.model)
+plot(cv.lasso.model$glmnet.fit, 
+     xvar="lambda", label=TRUE)
+
+#rebuild model w/ optimal lambda
+lasso.model <- glmnet(trainx, trainy, alpha = 1,
+                      family="gaussian", lambda=250) 
+
+predict <- predict(lasso.model, testx)
+
+R2(predict, testy)   #.774
+
+head(data.frame("Actual" = testy,
+                "Predict" = predict,
+                "Error" = predict-testy))
+
+sum(coef(lasso.model) !=0)
+    #6  (means there are 7 non-zero coefficients)
+sum(coef(lasso.model) ==0)
+    #2  (means there is 1 zero coefficients)
+
+
+#####
+#Best Subset Selection
+
+regsubsets(attendance ~ ., AttData, nvmax = 19)
+summary(regsubsets(attendance ~ ., AttData, nvmax = 19))
+#a star (*) means the variable was included in the mock model
+#each model represents a model with one additional variable added to it
+#shows relative importance of each variable in a way
+
+#####
+
