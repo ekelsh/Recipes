@@ -1,0 +1,120 @@
+#GRADIENT DESCENT
+
+#ONE VARIABLE
+
+model <- lm(attendance ~ home_win_pct, data = TBRays)
+
+coef(model)   #27,973 + 3,810X
+
+#FUNCTION #1 - the Gradient Descent FXN
+
+#x = a matrix for the input to the model m x n where m=rows and n=columns
+#y = a matrix for the target variable...an m x 1 matrix (m=rows)
+#alpha = the learning rate of the algorithm
+#epsilon = the value to use to test the While Loop....once the diff in the cost fxn between iteractions is less than this value, the While Loop will STOP
+
+#outputs = # of iterations used before it found the result and it will return the matrix of coefficients for the linear model
+
+GradD <- function(x, y, alpha = 0.005, epsilon = 10^-10){
+  iter <- 0
+  i <- 0
+  x <- cbind(rep(1,nrow(x)), x)
+  theta <- matrix(c(1,1),ncol(x),1)
+  cost <- (1/(2*nrow(x))) * t(x %*% theta - y) %*% (x %*% theta - y)
+  delta <- 1
+  while(delta > epsilon){
+    i <- i + 1
+    theta <- theta - (alpha / nrow(x)) * (t(x) %*% (x %*% theta - y))
+    cval <- (1/(2*nrow(x))) * t(x %*% theta - y) %*% (x %*% theta - y)
+    cost <- append(cost, cval)
+    delta <- abs(cost[i+1] - cost[i])
+    if((cost[i+1] - cost[i]) > 0){
+      print("The cost is increasing.  Try reducing alpha.")
+      return()
+    }
+    iter <- append(iter, i)
+  }
+  print(sprintf("Completed in %i iterations.", i))
+  return(theta)
+}
+
+
+#FUNCTION #2 - Predicition FXN
+
+TPredict <- function(theta, x){
+  x <- cbind(rep(1,nrow(x)), x)
+  return(x %*% theta)
+}
+
+#Putting it Into Action - non scaled data
+MatrixX <- as.matrix(TBRays$home_win_pct)   
+MatrixY <- as.matrix(TBRays$attendance)  
+
+theta <- GradD(MatrixX, MatrixY, alpha = 0.005, epsilon = 10^-10)
+theta
+          #OLD: 27,973 + 3,810X
+          #NEW: 27,973.63 + 3,810.46X 
+
+#Putting it Into Action - scaled data [if needed]
+scaled.theta <- GradD(scale(MatrixX), MatrixY, alpha = 0.005, epsilon = 10^-10)
+scaled.theta
+
+#...rescaling for easy interpretation
+ctheta <- scaled.theta[c(2:nrow(scaled.theta)),] / t(t(apply(x,2,sd)))
+cthetazero <- scaled.theta[1,1] - sum(scaled.theta[c(2:nrow(scaled.theta)),] / t(t(apply(x,2,sd))) * t(t(apply(x,2,mean))))
+
+ctheta <- matrix(c(cthetazero, ctheta))
+ctheta
+
+
+#FUNCTION #3 - The Normal Equation
+NormEquation <- function(x, y){
+  require(MASS)
+  x <- cbind(rep(1,nrow(x)), x)
+  ntheta <- ginv(t(x) %*% x) %*% t(x) %*% y
+  return(ntheta)
+}
+
+ntheta <- NormEquation(MatrixX, MatrixY)
+ntheta
+          #same results as above
+
+
+#MULTIPLE VARIABLE
+
+model2 <- lm(attendance ~ temp + is_bobblehead +
+               weekend, data = TBRays)
+
+coef(model2)   
+      #25,654 -74TEMP - 392BOBBLE + 6,085WEEKEND
+
+MatrixX <- as.matrix(TBRays[, c(5, 7, 9)])   
+MatrixY <- as.matrix(TBRays$attendance)
+
+theta <- GradD(MatrixX, MatrixY, alpha = 0.005, epsilon = 10^-10)
+theta
+
+#...can also scale Matrix X to Scale the variables
+#...can also use the Normal Equation
+
+
+#Calculating the RMSE for Linear Model Comparison
+ypred <- predict(model2, newdata = TBRays)
+
+print("RMSE for R Linear Model for Comparison:")
+sqrt(mean((TBRays$attendance - ypred)^2))
+
+#Calculating RMSE for Gradient Descent UNSCALED data
+ypred <- TPredict(theta, x)
+
+print("RMSE for Gradient Descent using unscaled data:")
+sqrt(mean((y - ypred)^2))
+
+#Calculating RMSE for Gradient Descent SCALED data
+ypred <- TPredict(scaled.theta, scale(x))
+
+print("RMSE for Gradient Descent using scaled data:")
+sqrt(mean((y - ypred)^2))
+
+
+
