@@ -1,0 +1,118 @@
+#Relevance Vector Machine (RVM) [Bayesian Model for Regression]
+#...essenially Sparse Bayesian Learning (SBL)
+#...only for Regression right now!!!
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV and variety of tuning parameters on ENTIRE dataset
+#step 3: retrieve optimal Tuning Parameters & get CV model's measure of error for later model comparison
+#step 4: rebuid model w/ optimal hyperparameters
+#step 5: repeat step 1 w/ tuned model
+
+library(kernlab) 
+library(Bolstad)
+library(pscl)
+library(monomvn)
+library(e1071)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(AUC)
+library(rattle)
+library(ROCR)
+library(h2o)
+library(glmnet)
+library(GGally)
+
+set.seed(999)
+
+#Create Training/Testing Datasets, Matrices and Set Seed
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -7])   #all factors except Y
+testx <- as.matrix(test[, -7])     
+
+trainy <- as.double(as.matrix(train[, 7]))  #only Y
+testy <- as.double(as.matrix(test[, 7]))
+
+
+#original models
+rvm.model.rbf <- rvm(trainx, trainy, type="regression",
+                 kernel = "rbfdot")
+rvm.model.lap <- rvm(trainx, trainy, type="regression",
+                     kernel = "laplacedot")
+rvm.model.bes <- rvm(trainx, trainy, type="regression",
+                     kernel = "besseldot")
+      #kernel "polydot" "vanilladot" "tanhdot" "anovadot" "splinedot" "stringdot"
+      #kpar = ....
+      #alpha = 
+
+rvm.model.rbf     #sigma = 0.07, vectors = 52, variance = 5879496, error = 5,413,480
+rvm.model.lap     #sigma = 0.05, vectors = 139, variance = 3020317, error = 2,457,290
+rvm.model.bes     #sigma = 1, order = 1, degree = 1, vectors = 117, variance = 13263472, error = 10,857,619
+
+rvm.model.rbf@tol      #tolerance
+rvm.model.rbf@nvar     #number of support vectors
+rvm.model.rbf@mlike
+rvm.model.rbf@nRV
+rvm.model.rbf@alpha
+
+rvm.model.rbf@kernelf
+rvm.model.rbf@fitted
+rvm.model.rbf@error
+
+predict.rbf <- predict(rvm.model.rbf, testx)
+predict.lap <- predict(rvm.model.lap, testx)
+predict.bes <- predict(rvm.model.bes, testx)
+
+
+mean(abs(predict.rbf-testy))  #2477
+mean(abs(predict.lap-testy))  #42242
+mean(abs(predict.bes-testy))  #4329
+
+
+#CROSS VALIDATION!!!!    method = "rvmRadial" or "rvmLinear" or whatever kernels we're using
+    #tune par rvmLinear = none
+    #tune par rvmPoly = degree and scale
+    #tune par rvmRadial = sigma
+
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+rvm.cv <- train(attendance ~., data=train, method = "rvmRadial", 
+                preProcess = c("center", "scale"),
+                tunelength=50, trControl=train.control)
+
+#note: I didn't CV other kernels bc of time constraints
+
+rvm.cv
+rvm.cv$bestTune
+rvm.cv$finalModel    #sigma=0.05, vectors = 43, variance = 6,145,536, error = 5,760,097
+
+#tune the original model(s)
+rvm.model.rbf <- rvm(trainx, trainy, type="regression",
+                     kernel = "rbfdot", sigma = 0.05)
+
+predict.rbf <- predict(svm.model.rad, test)
+
+mean(abs(predict.rbf-testy))     #2477 --> 2300
+
+#####
+
+
+
+
+
+
+
+
+
+
+
+
+
+
