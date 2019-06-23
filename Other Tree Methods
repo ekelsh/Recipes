@@ -1,0 +1,92 @@
+#Other Decision Trees
+#tree
+#evtree
+#CORElearn
+######################
+
+#Tree
+library(tree)
+
+ctree.model <- tree(factor(weekend)~., train, model = "tree")
+
+plot(ctree.model)
+text(ctree.model, cex=.7)   #cex just controls text size
+
+predict <- predict(ctree.model, test)
+
+#CV!!!
+    #method = "cforest" and "ctree"
+    #tune par for ctree = mincriterion
+    #tune par for cforest = mtry
+
+#Tune Model
+      
+#Evaluate Tuned Model
+
+#Evtree
+library(evtree)
+
+model.evtree <- evtree(factor(weekend) ~., data=train)
+plot(model.Dtree)
+
+predict <- predict(model.evtree, newdata = test)
+
+#CV!!!
+      #method = "evtree"
+      #tune parameter = alpha
+
+#Tune Model
+
+#Evaluate Tuned Model
+
+
+#CORELEARN (weekend)
+library(CORElearn)
+
+model.corelearn <- CoreModel(factor(weekend) ~., data=train, model = "regTree")
+print(model.Dtree)
+
+predict <- predict(model.corelearn, newdata = test)
+
+#CORELEARN (attendance)
+library(CORElearn)
+
+model.corelearn <- CoreModel(attendance~., data=train, model = "regTree")
+print(model.corelearn)
+
+predict <- predict(model.corelearn, newdata = test)
+
+#Cross Validation!!!!!  method = "cforest" and "ctree"
+      #tune par for ctree = mincriterion
+      #tune par for cforest = mtry
+
+#Tune Model
+
+#Evaluate Tuned Model
+
+
+##########
+
+#ROC
+Prediction <- prediction(probs$X1, test$weekend)    #uses the probability of 1 as the prediction
+            #validates the accuracy of the model
+Performance <- performance(Prediction, "tpr", "fpr")
+            #calculates True Positive and False Positive Rates
+plot(Performance, main="ROC Curve", colorize=T)
+
+#Lift ROC
+Performance.lift <-performance(Prediction, "lift", "rpp")
+plot(Performance.lift, main="lift curve", colorize = T)
+
+#Calculating KS Stats
+###NOTE: do NOT use lifted performance creation when calculating this
+ks1.tree <- max(attr(Performance, "y.values")[[1]]-
+                  (attr(Performance, "x.values")[[1]]))
+ks1.tree     #0.5889
+
+
+
+
+
+
+
