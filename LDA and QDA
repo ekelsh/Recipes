@@ -1,0 +1,216 @@
+#Linear Discriminant Analysis and QDA
+#syntax is VERY similar to lm and glm
+
+library(MASS)
+library(tibble)
+library(tidyverse)
+library(ROCR)
+
+set.seed(999)
+
+#TRAIN/TEST DATASETS
+#Create Training/Testing Datasets, Matrices and Set Seed
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -8])   #all factors except Y
+testx <- as.matrix(test[, -8])     
+
+trainy <- as.double(as.matrix(train[, 8]))  #only Y
+testy <- as.double(as.matrix(test[, 8]))
+
+#Exploring the Models
+lda.m1 <- lda(weekend ~., data = train)
+lda.m1
+plot(lda.m1)
+
+qda.m1 <- qda(weekend ~ ., data = train)
+qda.m1
+
+
+#Making Predictions
+pred.lda <- predict(lda.m1, test)
+pred.qda <- predict(qda.m1, test)
+
+
+#Evaluating Predictions
+lda.cm <- table(test$weekend, pred.lda$class)
+qda.cm <- table(test$weekend, pred.lda$class)
+
+list(LDA_model = lda.cm %>% prop.table() %>% round(3),
+     QDA_model = qda.cm %>% prop.table() %>% round(3))
+      #88.2% correct
+      #both have same Confusion Matrix
+
+#Estimating the Overall Error Rates
+test %>%
+  mutate(pred.lda = (pred.lda$class),
+         pred.qda = (pred.qda$class)) %>%
+  summarise(lda.error = mean(weekend != pred.lda),
+            qda.error = mean(weekend != pred.qda))
+
+  #lda error = 0.1182
+  #qda error = 0.1281
+
+list(LDA_model = lda.cm,
+     QDA_model = qda.cm)
+
+#Confusion Matrix, Accuracy Rate, Error Rate
+lda.pred <- predict(lda.m1, newdata = test)
+qda.pred <- predict(qda.m1, newdata = test)
+
+table(test$weekend, lda.pred$class)
+table(test$weekend, qda.pred$class)
+      #Confusion Matric
+
+mean(lda.pred$class == test$weekend)  #88.2%
+mean(qda.pred$class == test$weekend)  #87.2%
+      #Accuracy Rate
+
+mean(lda.pred$class != test$weekend)  #11.8%
+mean(qda.pred$class != test$weekend)  #12.8%
+      #Error Rate
+
+
+
+#OPTIONAL
+#Create Adjusted Predictions (i.e. predicting 1 for quantity other than 0.5)
+lda.pred.adj <- ifelse(pred.lda$posterior[, 2] > .40, 1, 0)
+qda.pred.adj <- ifelse(pred.qda$posterior[, 2] > .40, 1, 0)
+
+list(LDA_model = table(test$weekend, lda.pred.adj),
+     QDA_model = table(test$weekend, qda.pred.adj))
+
+
+#ROC
+par(mfrow=c(1, 2))
+
+prediction(pred.lda$posterior[,2], test$weekend) %>%
+  performance(measure = "tpr", x.measure = "fpr") %>%
+  plot()
+
+prediction(pred.qda$posterior[,2], test$weekend) %>%
+  performance(measure = "tpr", x.measure = "fpr") %>%
+  plot()
+
+#AUCs
+prediction(pred.lda$posterior[,2], test$weekend) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+    #0.9477567
+
+prediction(pred.qda$posterior[,2], test$weekend) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+    #0.945096
+
+
+#COMPARING TO LOGISTIC REGRESSION
+#original model
+glm.fit <- glm(weekend ~ ., 
+               data = train,
+               family = binomial)
+
+summary(glm.fit)
+
+#original predictions
+glm.probs <- predict(glm.fit, test, type="response")
+
+#evaluating model
+table(test$weekend, ifelse(glm.probs > 0.5, "Weekend", "Weekday"))
+      #Confusion Matrix
+      #86.2%
+
+mean(ifelse(glm.probs > 0.5, 1, 0) == test$weekend)
+      #accuracy rate
+      #86.2%
+
+mean(ifelse(glm.probs > 0.5, 1, 0) != test$weekend)
+      #error rate
+      #13.7%
+
+#assessing variable importance
+caret::varImp(glm.fit)
+
+#tuning model
+glm.fit <- glm(factor(weekend) ~ home_win_pct + away_win_pct + attendance + pct_season_completed,
+               data = train,
+               family = binomial)
+
+summary(glm.fit)
+
+#tuned predictions
+glm.probs <- predict(glm.fit, test, type = "response")
+
+#evaluating tuned performance
+table(test$weekend, ifelse(glm.probs > 0.5, 1, 0))
+      #confusion matrix
+      #86.2%
+
+mean(ifelse(glm.probs > 0.5, 1, 0) == test$weekend)
+      #accuracy rate
+      #86.2%
+
+mean(ifelse(glm.probs > 0.5, 1, 0) != test$weekend)
+      #error rate
+      #13.8%
+
+
+#COMPARING CONFUSION MATRIX, ACCURACY, AND ERROR RATES
+
+table(test$weekend, lda.pred$class)
+table(test$weekend, qda.pred$class)
+table(test$weekend, ifelse(glm.probs > 0.5, "Weekend", "Weekday"))
+#Confusion Matric
+
+mean(lda.pred$class == test$weekend)  #88.2%
+mean(qda.pred$class == test$weekend)  #87.2%
+mean(ifelse(glm.probs > 0.5, 1, 0) == test$weekend)   #86.3%
+#Accuracy Rate
+
+mean(lda.pred$class != test$weekend)  #11.8%
+mean(qda.pred$class != test$weekend)  #12.8%
+mean(ifelse(glm.probs > 0.5, 1, 0) != test$weekend)   #13.7%
+#Error Rate
+
+
+#COMPARING ROC CURVES
+dev.off()
+
+p1 <- prediction(glm.probs, test$weekend) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+p2 <- prediction(lda.pred$posterior[,2], test$weekend) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+p3 <- prediction(qda.pred$posterior[,2], test$weekend) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+plot(p1, col = "red")
+plot(p2, add = TRUE, col = "blue")
+plot(p3, add = TRUE, col = "green")
+
+
+#COMPARING AUC
+
+#Logistic = 0.9396
+prediction(glm.probs, test$weekend) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+#LDA = 0.94776
+prediction(lda.pred$posterior[,2], test$weekend) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+#QDA = 0.94596
+prediction(qda.pred$posterior[,2], test$weekend) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+
+
+
+
+
+
