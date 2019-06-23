@@ -1,0 +1,76 @@
+#KNN k-Nearest Neightbors
+#classification or regression
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV and variety of tuning parameters on ENTIRE dataset
+#step 3: retrieve optimal Tuning Parameters & get CV model's measure of error for later model comparison
+#step 4: rebuid model w/ optimal hyperparameters
+#step 5: repeat step 1 w/ tuned model
+
+library(caret)
+library(FNN)
+library(MASS)
+library(e1071)
+library(pscl)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(AUC)
+library(rattle)
+library(ROCR)
+library(h2o)
+library(glmnet)
+
+set.seed(999)
+
+#Create Training/Testing Datasets, Matrices and Set Seed
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -7])   #all factors except Y
+testx <- as.matrix(test[, -7])     
+
+trainy <- as.double(as.matrix(train[, 7]))  #only Y
+testy <- as.double(as.matrix(test[, 7]))
+
+
+####PUT BINARY V HERE
+
+##########
+
+#Y = Attendance
+
+#build original model
+knn.model <- knnreg(trainx, trainy, k=11)
+      #k= number of neighbors considered
+
+predict <- predict(knn.model, testx)
+
+R2(predict, testy)   #47.9%
+
+#CV method "knn"
+#tune par = K
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+cv.knn.model <- train(attendance ~., data=train, method = "knn",
+                      preProcess = c("center", "scale"),
+                      tunelength=50, trControl=train.control)
+
+cv.knn.model
+    #k=5 used for the model
+    #rsq max 58.2%
+
+#tune model
+knn.model <- knnreg(trainx, trainy, k=5)
+    #k= number of neighbors considered
+
+predict <- predict(knn.model, testx)
+
+R2(predict, testy)   #56%
+
+
