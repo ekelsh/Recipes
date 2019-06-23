@@ -1,0 +1,171 @@
+#Stepwise/Forward/Backward Regression
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV on ENTIRE dataset
+#step 3: get CV model's measure of error for later model comparison
+#step 4: tune model if necessary
+#step 5: repeat step 1 w/ tuned model
+
+library(ridge)
+library(AUC)
+library(car)
+library(glmnet)
+library(lmtest)
+library(RcmdrMisc)
+library(caret)
+library(dplyr)
+library(MASS)
+library(HH)
+library(leaps)
+library(tidyverse)
+library(lars)
+library(relaimpo)
+
+set.seed(999)
+
+#remove rows w/ missing dtaa
+TBRays <- na.omit(TBRays) %>%
+  as_tibble
+
+#Create Training/Testing Datasets and Matrices
+set.seed(999)    #set seed to replicate results
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -7])  #all variables besides Y / string variables
+testx <- as.matrix(test[, -7])
+
+trainy <- as.double(as.matrix(train[, 7]))  #represents the Y in question
+testy <- as.double(as.matrix(test[, 7]))
+
+
+#STEPWISE REGRESSION METHOD 1 MASS
+
+#build original model, including ALL variables (can add interaction terms, scaled terms, etc. later)
+lm.model <- lm(attendance ~., data=train)
+
+#build stepwise model(s) [default method]
+step.model <- stepAIC(lm.model, direction="both", trace=TRUE)
+
+step.model.int <- stepAIC(lm.model, ~. ^2, direction="both", trace=FALSE)
+      #interaction between all variables
+step.model.int <- stepAIC(lm.model, ~. + temp:is_bobblehead, direction="both",trace=FALSE)
+      # : represents interaction between the 2 variables
+step.model.exp <- stepAIC(lm.model, ~. + I(temp^2), direction="both", trace=FALSE)
+      #sqrt(x) to revert back
+step.model.log <- stepAIC(lm.model, ~. + log(temp), direction="both", trace=FALSE)
+      #exp(x) to revert back
+step.model.scale <- stepAIC(lm.model, ~. + scale(temp), direction="both", trace=FALSE)
+      #scales the temp variable
+step.model.minus <- stepAIC(lm.model, ~. - opposing_team, direction="both", trace=FALSE)
+      #to remove a variable
+
+#build backawrds elimination model(s)
+step.backwards <- stepAIC(lm.model, direction = "backward")
+
+#build forwards selection model(s)
+step.forwards <- stepAIC(lm.model, direction = "forward")
+
+plot(step.model)
+plot(step.backwards)
+plot(step.forwards)
+
+step.model$coefficients
+step.backwards$coefficients
+step.forwards$coefficients
+
+step.model$fitted.values
+step.model$residuals
+
+step.model$anova       #want lowest AIC value
+step.backwards$anova
+step.forwards$anova
+
+predict.step <- predict(step.model, test)
+predict.back <- predict(step.backwards, test)
+predict.forward <- predict(step.forwards, test)
+
+R2(predict.step, testy)      #77.8%
+R2(predict.back, testy)      #77.8%
+R2(predict.forward, testy)   #77.7%
+
+#CV - method = "lmStepAIC"
+#no tuning parameters
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+cv.step.model <- train(attendance ~., data=train, method = "lmStepAIC",
+                        tunelength=50, trControl=train.control)
+
+cv.predict <- predict(cv.step.model, test)
+
+R2(cv.predict, testy)    #77.8%
+
+
+#LARS REGRESSION METHOD 2
+#Least Angle Regresssion
+
+#Create Original Model
+lars.model <- train(attendance ~., data=train, method="lars")
+
+lars.model  
+    #various rsq valus for various tuning parameters
+    #used Bootstrapped as resampling method
+    #best rsq valye 0783
+
+summary(lars.model)
+
+plot(lars.model)
+
+#Make Predictions Using the Model
+predict <- predict(lars.model, testx)
+
+R2(predict, testy)   #0.778
+
+mean(abs(predict-test$attendance))  #2212
+
+#Create CV Model
+#tuning par = fraction
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+cv.lars.model <- train(attendance ~., data=train, method = "lars", 
+                      tunelength=50, trControl=train.control)
+cv.lars.model
+summary(cv.lars.model)
+
+predict.cv <- predict(cv.lars.model, test)
+
+R2(predict.cv, testy)   #.778
+
+mean(abs(predict.cv-test$attendance))   #2212
+
+#####
+#Relative Importance of Predictors in the Model
+
+calc.relimp(lm.model)
+#calculates relative importance of each predictor in model
+
+boot <- boot.relimp(lm.model, b=1000, rank=TRUE, rela=TRUE)
+booteval.relimp(boot)
+plot(booteval.relimp(boot, sort=TRUE))
+#measures relative importance given 1,000 samples
+
+#####
+
+#####
+#Best Subset Selection
+
+regsubsets(attendance ~ ., TBRays, nvmax = 19)
+summary(regsubsets(attendance ~ ., TBRays, nvmax = 19))
+      #a star (*) means the variable was included in the mock model
+      #each model represents a model with one additional variable added to it
+      #shows relative importance of each variable in a way
+
+#####
+
