@@ -1,0 +1,247 @@
+#LOGISTIC REGRESSION
+#+ LASSO
+#+ Ridge
+#classification
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV and variety of tuning parameters on ENTIRE dataset
+#step 3: retrieve optimal Tuning Parameters & get CV model's measure of error for later model comparison
+#step 4: rebuid model w/ optimal hyperparameters
+#step 5: repeat step 1 w/ tuned model
+
+library(e1071)
+library(pscl)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(AUC)
+library(rattle)
+library(ROCR)
+library(h2o)
+library(glmnet)
+
+set.seed(999)
+
+#Create Training/Testing Datasets, Matrices and Set Seed
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -8])   #all factors except Y
+testx <- as.matrix(test[, -8])     
+
+trainy <- as.double(as.matrix(train[, 8]))  #only Y
+testy <- as.double(as.matrix(test[, 8]))
+
+
+#original model(s)
+log.model <- glm(formula = factor(weekend) ~. , data = train,family='binomial')
+      #glm...formula + data + na.action + control(train_control) + family ("binomial" for logit, "poisson" for log, "gaussian" for identity, "Gamma" for inverse)
+log.model <- glm.fit(trainx, trainy, family='binomial')
+      #glm.fit...x matrix + y matrix + na.actio  + family ("binomial" for logit, "poisson" for log, "gaussian" for identity, "Gamma" for inverse)
+
+log.model.int <- glm(formula = factor(weekend) ~. ^2, data=train, family = "binomial")  
+      #creates interaction term between all of the variables
+log.model.single.int <- glm(factor(weekend) ~. + home_win_pct:temp, data=train, family = "binomial")     
+      #: used to represent the interaction between the 2 variables
+log.model.scale <- glm(factor(weekend) ~. + scale(home_win_pct), data=train, family="binomial")
+      #scale() used to scale the home_win_pct variable
+log.model.sq <- glm(factor(weekend) ~. + I(temp^2), data=train, family="binomial")
+      #I(temp^2) used to add exp term [polynomial] to the temp variable...could also do poly(temp)
+      #sqrt(temp coeff) for easy interpretation of the coeff
+log.model.log <- glm(factor(weekend) ~. + log(attendance), data=train, family="binomial")  
+      #log(attendance) used to add log term to the attendance variable
+      #use exp(att coeff) for easy interpretation of the coeff
+log.model.minus <- glm(factor(weekend) ~. -day_of_week_effect, data=train, family="binomial")
+      #subtracts a variable from the model
+  
+
+summary(log.model)
+summary(log.model.int)
+      #coefficients, p-values, significance
+      #AIC 300.77 / 219.14
+      #number of fisher scoring iterations = 7
+
+coef(log.model)
+resid(log.model)
+family(log.model)
+
+log.model$fitted.values
+log.model$aic
+
+plot(log.model)
+    #residuals vs fitted
+    #normal QQ
+    #scale location
+    #residuals vs leverage
+
+plot(log.model$residuals)
+hist(log.model$residuals)
+
+
+#Cross Validation!!!!!
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+cv.model <- train(trainx, factor(trainy), method = "glm", 
+                  tunelength=50, trControl=train.control)
+
+#or
+
+cv.model <- cv.glmnet(trainx, trainy, nfolds = 10, type.measure = "auc")
+      #type.measure = "deviance" [default] mse" "class" "auc"
+
+
+plot(cv.model)
+    #error as a fxn of lambda (select lambda that minimizes error)
+    #shows that the LOG of the optimal value of lambda (the one that minimizes MSE is appx -6.33)
+
+#find optimal lambda
+cv.model$lambda.min  #0.0018  which is apx = exp(-6.33)
+cv.model$lambda.1se  #0.021   the OPTIMAL LAMBDA
+
+
+#find coefficients/probabilities w/ optimal lambda
+coef(log.model, s=0.021)
+      #coef based on optimal value of lambda
+
+log.prob <- data.frame(predict(log.model,test, s=0.021, type= "response"))
+
+log.predict <- rep(0, nrow(test))
+log.predict[log.prob$fit > .5] <- 1
+table(pred=log.predict, true=test$weekend)
+
+(64+117)/nrow(test)
+#89.16% accurate
+
+R2(log.predict, testy)  #.5916
+RMSE(log.predict, testy)  #.329
+
+pR2(log.model)
+
+##########
+
+
+#LASSO Logistic Regression - CV
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+lasso.model <- train(trainx, factor(trainy), method = "lasso", 
+                     tunelength=50, trControl=train.control)
+
+#or
+
+lasso.model <- cv.glmnet(trainx, trainy, alpha=1, family='binomial', type.measure="auc")
+      #type.measure = "deviance" [default] mse" "class" "auc"
+
+plot(lasso.model)
+      #error as a fxn of lambda (select lambda that minimizes error)
+      #shows that the LOG of the optimal value of lambda (the one that minimizes MSE is appx -5.75)
+
+lasso.model$lambda.min
+      #0.0035
+      #which is appx = to exp(-5.75)
+lasso.model$lambda.1se
+      #0.0142
+      #gives the simplist model but also lies within 1 SE of optimal value of Lambda
+
+coef(lasso.model, s=0.0142)
+      #shows only the variables of significance (non 0 coefficients)
+      #coef based on optimal value of lambda
+
+
+lasso.prob <- predict(lasso.model,newx = testx,s=0.0142,type= "response") 
+
+lasso.predict <- rep("neg", nrow(test))
+lasso.predict[lasso.prob > .5] <- "pos"
+table(pred=lasso.predict, true=test$weekend)
+
+(62+117)/nrow(test)
+      #88.18% accurate
+
+R2(lasso.prob, testy)  #.6384
+RMSE(lasso.prob, testy)    #.2918
+
+pR2(lasso.model)
+
+##########
+
+#RIDGE Logistic Regression - CV
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+ridge.model <- train(trainx, factor(trainy), method = "ridge", 
+                     tunelength=50, trControl=train.control)
+
+#or
+
+ridge.model <- cv.glmnet(trainx, trainy, alpha=0, family='binomial', type.measure="auc")
+      #type.measure = "deviance" [default] mse" "class" "auc"
+
+plot(ridge.model)
+    #error as a fxn of lambda (select lambda that minimizes error)
+    #shows that the LOG of the optimal value of lambda (the one that minimizes MSE is appx -4)
+
+ridge.model$lambda.min
+      #0.0279
+      #which is appx = to exp(-4)
+ridge.model$lambda.1se
+      #0.03
+      #gives the simplist model but also lies within 1 SE of optimal value of Lambda
+
+coef(ridge.model, s=0.03)
+      #shows ALL variables with many coefficients (not as sig coeff) pushed towards 0)
+      #coef based on optimal value of lambda
+
+ridge.prob <- predict(ridge.model,newx = testx,s=0.03,type= "response") 
+
+ridge.predict <- rep("neg", nrow(test))
+ridge.predict[ridge.prob > .5] <- "pos"
+table(pred=ridge.predict, true=test$weekend)
+
+(60+117)/nrow(test)
+      #87.19% accurate
+
+R2(ridge.prob, testy)  #.5903
+RMSE(ridge.prob, testy)    #.23281
+
+pR2(ridge.model)
+
+#...SO...the LASSO model performs slightly better
+
+##########
+
+#ROC/AUC [only works w/ probabilities]
+prediction(log.prob$fit, testy) %>%
+  performance(measure = "tpr", x.measure = "fpr") %>%
+  plot(colorize=T)
+
+prediction(log.prob$fit, testy) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+  #0.9529 *** pay attn to this when comparing models
+
+####
+
+#ROC Chart + Lifting [only works w/ probabilities]
+pred <- prediction(log.prob$fit, testy)
+perf <- performance(pred, "tpr", "fpr")
+#calculates True Positive and False Positive Rates
+plot(perf, main="ROC Curve", colorize=T)
+
+perf.lift <- performance(pred, "lift", "rpp")
+plot(perf.lift, main="lift curve", colorize=T)
+
+#Calculating KS Stats
+###NOTE: do NOT use lifted performance creation when calculating this
+ks1.tree <- max(attr(perf, "y.values")[[1]]-
+                  (attr(perf, "x.values")[[1]]))
+ks1.tree     #0.782
+
+
+#######CAN ALSO DO ELASTIC NET!!!
