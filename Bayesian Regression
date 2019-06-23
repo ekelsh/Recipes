@@ -1,0 +1,232 @@
+#BAYESIAN REGRESSION
+#alternative to Frequentist Approach
+#regression
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV on ENTIRE dataset
+#step 3: get CV model's measure of error for later model comparison
+#step 4: tune model if necessary
+#step 5: repeat step 1 w/ tuned model
+
+library(MCMCpack)
+library(Bolstad)
+library(pscl)
+library(monomvn)
+library(BAS)
+library(arm)
+library(e1071)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(AUC)
+library(rattle)
+library(ROCR)
+library(h2o)
+library(glmnet)
+library(GGally)
+library(Bolstad)
+library(relaimpo)
+
+set.seed(999)
+
+#Create Training/Testing Datasets, Matrices and Set Seed
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -8])   #all factors except Y
+testx <- as.matrix(test[, -8])     
+
+trainy <- as.double(as.matrix(train[, 8]))  #only Y
+testy <- as.double(as.matrix(test[, 8]))
+
+###
+#METHOD 1 - BAS
+
+#original model
+bayes.model <- bas.lm(attendance ~. - opposing_team, data = train, method= "MCMC",
+                      na.action = "na.omit", prior = "ZS-null", modelprior = uniform())
+     #prior = "ZS-null" is the default...all Bayes factors are compared to the null model
+     #prior = "AIC"
+     #prior = "BIC"
+     #modelprior=...uniform(), beta.binomial(1,1), tr.poisson() (truncated Poisson)...default is beta.binomial
+
+print(bayes.model)
+summary(bayes.model)
+     #will return the top 5 models w/ the zero-one indicators for variable inclusion
+     #BF = Bayes Factor
+     #PostProbs = posterior probabilities of the model
+     #dim = dimensions of the model
+     #logmarg = log marginal likelihood under the selected prior distribution
+coef(bayes.model)
+     #will return how many models the coefficients are based on
+confint(coef(bayes.model))
+    #CI for each predictor estimate
+
+#visualizations
+plot(bayes.model)
+      #residuals v fitted (want no pattern)
+      #model probabilities (the cumulative probability should level off as each additional model adds only a small incremental increase in prob)
+      #model complexity (the number of regression coefficients including the intercept) versus the log of the marginal likelihood of the model)
+      #marginal posterior inclusion probabilities (pip) for each of the covariates,
+      #marginal pips greater than 0.5 shown in red
+      #Variables with high inclusion probabilities are generally important for explaining the data or prediction, but marginal inclusion probabilities may be small if there are predictors that are highly correlated
+
+image(bayes.model, rotate=F)
+      #represents the collection of the models (beyond just the first 5)
+      #Each column represents one of the 16 models
+      #Variablesexcluded are shown in black & variables included are colored, with the color related to the log posterior probability
+
+plot(coef(bayes.model))
+      #plots each coefficient in model
+      #vertical bars represent the posterior probability that the coefficient is 0
+      #bell shaped curve represents the density of plausible values from all models where the coefficient is non-zero
+      #theheight of the curve is the probability that the coeff is non-0
+
+###
+#fitted/predicted valyes w/ model
+fit.bayes <- fitted(bayes.model, estimator = "BMA")
+predict.bayes <- predict(bayes.model, estimator = "BMA")
+
+names(predict.bayes)
+
+#plotting the 2 sets of fitted values (we want them to be in perfect agreement)
+plot(fit.bayes, predict.bayes$fit,
+     pch = 16,
+     xlab = expression(hat(mu[i])), ylab = expression(hat(Y[i]))
+)
+abline(0, 1)
+####
+
+#building the BEST probability model ******* USE THIS ONE!!!!
+best.bayes <- predict(bayes.model, estimator = "BPM")
+      #...also do with "MPM" Median probability model
+      #...also do with "HPM" Highest probability model
+variable.names(best.bayes)
+      #only shows the variables of significance
+best.bayes$bestmodel
+      #show the indices of variables in the best model where 0 is the intercept
+
+#comparing models
+
+ggpairs(data.frame(
+  HPM = as.vector(hpm.bayes$fit),      #highest
+  MPM = as.vector(mpm.bayes$fit),      #median
+  BPM = as.vector(best.bayes$fit),     #best
+  BMA = as.vector(predict.bayes$fit)   #bma is the original model
+)) 
+
+###
+BPM <- predict(bayes.model, estimator = "BPM", se.fit = TRUE)
+    #predictions for train data set
+BPM.CI <- confint(BPM, parm = "mean")
+    #CI for predictions on the train data set
+BPM.Pred <- confint(BPM, parm = "pred")
+    #predictions w/ CI for train data set
+
+plot(BPM.CI)   #CI for each n
+plot(BPM.Pred[1:100]) #"""
+###
+
+###
+#to find the characteristics that lead to the highest attendance
+max.likelihood <- which.max(best.bayes$fit)
+
+#to return the characteristics that lead to highest att in BPM [best prob model] Model
+#make sure the data set used to make the model used in command above is the same data set used in below command
+t(train[max.likelihood, ])
+###
+
+#Make Predictions on New Data!!! (use whichever model had highest correlation...HPM/MPM/BPM/BMA)
+predict <- predict(bayes.model, newdata = test, estimator = "BPM", se.fit=TRUE, interval= "predict")
+predict <- data.frame(predict$fit)
+
+head(data.frame("Actual" = testy, "Predicted" = predict))
+
+#Sum of Squares Total and Sum of Squares Error
+sst <- sum((testy - mean(testy))^2)
+sse <- sum((predict.bayes - testy)^2)
+#R Squared
+rsq <- 1 - (sse/sst)
+rsq
+    #.7632
+
+    
+#Cross Validation!!!!!  bayesglm
+#no tuning parameters
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+bayes.cv <- train(trainx, trainy, method = "bayesglm", 
+                  preProcess = c("center", "scale"),
+                  tunelength=50, trControl=train.control)
+print(bayes.cv)
+    #R2 (.779), RMSE, MAE
+bayes.cv$finalModel
+    #coefficients, AIC (11340)  (Akaike Information Criterion)
+
+
+#there are no tuning paramters for Bayesian Models...so our main goal is just to get the error term
+
+
+###
+#METHOD 2 - Bolstad
+
+bayes.model <- bayes.lm(attendance ~. , data=train, model = TRUE,
+                        prior = NULL, sigma = FALSE)
+      #subset...an optional vector specifying a subset of observations to be used in the fitting process
+      #na.action...fxn indicating what should happen when the data contains NAs...default is na.omit
+      #model....if TRUE, corresponding components of the model are returned
+      #x...if TRUE, corresponding components of the model are returned
+      #y...if TRUE, corresponding components of the model are returned
+      #center...if TRUE then covariates will be centered on their means to make them orthogonal to the intercept
+      #prior...a list containing a vector of prior coefficients
+      #sigma...[population standard deviation of the errors] if FALSE then this is estimated from the RSS from the model fit
+
+summary(bayes.model)
+print(bayes.model)
+
+coef(bayes.model)
+fitted.values(bayes.model)
+confint(bayes.model)
+
+residuals(bayes.model)
+qqnorm(bayes.model$residuals)
+qqline(bayes.model$residuals)
+hist(bayes.model$residuals)
+
+predict <- predict(bayes.model, newdata = test)
+
+R2(predict, testy)   #.777
+
+#CROSS VALIDATION!!!!! method= "bayesglm"
+#no tuning parameters
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+bayes.cv <- train(attendance ~., data=train, method = "bayesglm", 
+                  preProcess = c("center", "scale"),
+                  tunelength=50, trControl=train.control)
+
+predict.cv <- predict(bayes.cv, test)
+
+R2(predict.cv, testy)   #.777
+
+
+#there are no tuning paramters for Bayesian Models...so our main goal is just to get the error term
+
+
+#####
+#Best Subset Selection
+
+regsubsets(attendance ~ ., TBRays, nvmax = 19)
+summary(regsubsets(attendance ~ ., TBRays, nvmax = 19))
+#a star (*) means the variable was included in the mock model
+#each model represents a model with one additional variable added to it
+#shows relative importance of each variable in a way
+
+#####
