@@ -1,0 +1,163 @@
+#Party - Decision Trees
+#alternatives to logistic regression
+#probability of being in any hierarchical group
+#classification only
+
+#step 1: create original model
+#step 2: create tuning grid to find optimal hyperparameters
+#step 3: create final model w/ final tuning parameters
+#step 4: perform bagging to validate
+
+library(party)
+library(dplyr)
+library(caret)
+library(rpart.plot)
+library(AUC)
+library(rattle)
+library(ROCR)
+library(ROSE)
+library(ipred)
+
+set.seed(999)
+
+#Create Training/Testing Datasets, Matrices and Set Seed
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -8])   #all factors except Y
+testx <- as.matrix(test[, -8])     
+
+trainy <- as.double(as.matrix(train[, 8]))  #only Y
+testy <- as.double(as.matrix(test[, 8]))
+
+
+# Y = weekend (0 or 1)
+
+#...Original Model
+ctree.model <- ctree(factor(weekend)~., data=train,
+                     control=ctree_control(mincriterion=0.95))
+        #ctree_control(...).....
+        #mincriterion controls the significance parameter...i.e. 95% Confidence Interval/Level
+        #minsplit = minimum sum of weights in a node in order to be considered for splitting
+        #nresample = # of Monte-Carlo replications to use when the distribution of the test stat is simulated
+        #mtry = number of unput variables randomly sampled as candidates at each node for random forest like algorithms (default is 0)
+        #maxdepth = maximum depth of trees (default is 0, meaning no restrictions)
+        #maxsurrogate = number of surrogate splits to evaluate   
+
+plot(ctree.model)
+ctree.model@tree
+      #written decision tree, weights, criterion, etc.
+nodes(ctree.model, 1)
+      #details of each individual node
+
+
+#...Original Predictions
+probs.ctree <- predict(ctree.model, newdata=test, type = "prob")
+pred.ctree <- as.vector(predict(ctree.model, newdata=test, type = "response"))
+
+sum(pred.ctree == testy)/nrow(test)  #76.8%
+
+table(test$weekend, pred.ctree, dnn = c("Actual", "Predicted"))
+      #156 correct and 47 incorrect
+
+#Regular CV Method
+#tune par for ctree = mcriterion (p-value to consider splits)
+
+train.control <- trainControl(method = 'cv', number = 10,  
+                          verboseIter = FALSE, search = "random")
+
+ctree.cv <- train(factor(weekend) ~ ., data = train, 
+                   method = 'ctree', trControl = train.control, 
+                   preProcess = c("scale"), 
+                   tuneLength = 10)
+
+
+#Bootstrapping method = "ctree"
+#tune par for ctree = mcriterion (p-value to consider splits)
+
+train.control <- trainControl(method = "boot", number = 10, 
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+ctree.boot <- train(trainx, factor(trainy), method = "ctree", 
+                       preProcess = c("center", "scale"),
+                       trControl=train.control)
+
+print(ctree.boot)
+      #mincriterion (.67), accuracy (81.2%), and kappa (.612)
+
+
+#...Createt Tuned Model
+ctree.model <- ctree(factor(weekend)~., data=train,
+                     control = ctree_control(mincriterion = 0.95))
+
+  #teststate = c("qud" "max")
+  #testtype = c("Bonferroni", "MonteCarlo", "Univariate", "Teststatistic")
+  #mincriterion = 
+  #minsplit =
+  #minbucket =
+  #stump = TRUE or FALSE
+  #nresample =
+  #maxsurrogate =
+  #savesplitstats = TRUE
+  #maxdepth =
+
+pred.ctree <- predict(ctree.model, newdata=test, type = "response")
+
+sum(pred.ctree == testy)/nrow(test)  #77.8%
+
+table(test$weekend, pred.ctree, dnn = c("Actual", "Predicted"))
+    #158 correct and 45 incorrect
+
+
+#...Bagging
+#method = "treebag"
+ctrl <- trainControl(method = "cv",  number = 10) 
+
+bagged.cv <- train(factor(weekend) ~ .,
+  data = train, method = "treebag",
+  trControl = ctrl, importance = TRUE)
+
+bagged.cv
+      #Accuracy 86%
+      #Kappa 0.71
+
+plot(varImp(bagged.cv), 20)
+
+
+#ROC/AUC [only works w/ probabilities]
+prediction(predict.forest, testy) %>%
+  performance(measure = "tpr", x.measure = "fpr") %>%
+  plot(colorize=T)
+
+prediction(predict.forest, testy) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+  #0.916 *** pay attn to this when comparing models
+
+prediction(predict.tree, testy) %>%
+  performance(measure = "tpr", x.measure = "fpr") %>%
+  plot(colorize=T)
+
+prediction(predict.tree, testy) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+  #0.843 *** pay attn to this when comparing models
+
+#ROC Chart + Lifting [only works w/ probabilities]
+pred <- prediction(predict.forest, testy)
+perf <- performance(pred, "tpr", "fpr")
+#calculates True Positive and False Positive Rates
+plot(perf, main="ROC Curve", colorize=T)
+
+perf.lift <- performance(pred, "lift", "rpp")
+plot(perf.lift, main="lift curve", colorize=T)
+
+#Calculating KS Stats
+###NOTE: do NOT use lifted performance creation when calculating this
+ks1.tree <- max(attr(perf, "y.values")[[1]]-
+                  (attr(perf, "x.values")[[1]]))
+ks1.tree     #0.614
