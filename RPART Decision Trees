@@ -1,0 +1,381 @@
+#RPART - Decision Trees
+#alternatives to logistic regression
+#probability of being in any hierarchical group
+#classification AND regression
+
+#step 1: create original model
+#step 2: create tuning grid to find optimal hyperparameters
+#step 3: create final model w/ final tuning parameters
+#step 4: perform bagging to validate
+
+library(rpart)
+library(dplyr)
+library(caret)
+library(rpart.plot)
+library(AUC)
+library(rattle)
+library(ROCR)
+library(ROSE)
+library(ipred)
+
+set.seed(999)
+
+#Create Training/Testing Datasets, Matrices and Set Seed
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -8])   #all factors except Y
+testx <- as.matrix(test[, -8])     
+
+trainy <- as.double(as.matrix(train[, 8]))  #only Y
+testy <- as.double(as.matrix(test[, 8]))
+
+
+#####
+# Y = weekend (0 or 1)
+
+#ORIGINAL MODEL
+rpart.model <- rpart(factor(weekend)~., 
+                     data = train, method="class")
+  #method can be "class", "poisson", "anova", or "exp" [if missing, the algorithm makes an intelligent guess]
+  #"class" if y is a factor | "poission" if y has 2 columns | "exp" if y is a survival object | "anova" for other
+
+summary(rpart.model)  
+  #breaks down each node, the # of observations involved, the predicted class, probabilities, etc.
+
+prp(rpart.model)            #draws the deciison tree [basic]
+rpart.plot(rpart.model)     #draws the decision tree [pretty]
+fancyRpartPlot(rpart.model) #draws the decision tree [prettiest]
+
+rpart.model$parms
+    #shows priors, ID matrix
+rpart.model$control
+    #cp used, min splits, min buckets, 
+
+printcp(rpart.model)   
+    #shows the variables actually used in the model
+    #CP = Complexity Parameter
+    #optimal CP = lowest xerror [0.010]
+plotcp(rpart.model)
+    #another way to find optimal CP
+    #we start to experience diminishing returns after the 5th or 6th node w/ CP around 0.04
+
+#original predictions
+probs <- data.frame(predict(rpart.model, test, type="prob"))
+pred <- data.frame(predict(rpart.model, test, type="class"))
+
+sum(pred == testy)/nrow(test)
+    #78.8% accuracy
+
+#TUNING
+#grid search...can only do 3 at a time....
+hyper_grid <- expand.grid(
+  minsplit = seq(5, 20, 1),
+  maxdepth = seq(8, 15, 1)
+)
+
+head(hyper_grid)
+
+models <- list()
+
+for (i in 1:nrow(hyper_grid)) {
+  
+  minsplit <- hyper_grid$minsplit[i]    # get minsplit, maxdepth values at row i
+  maxdepth <- hyper_grid$maxdepth[i]
+  
+  models[[i]] <- rpart(                 # train a model and store in the list
+    formula = attendance ~ .,
+    data    = train,
+    method  = "class",
+    control = list(minsplit = minsplit, maxdepth = maxdepth)
+  )
+}
+
+
+#...fxn to get optimal CP
+get_cp <- function(x) {
+  min    <- which.min(x$cptable[, "xerror"])
+  cp <- x$cptable[min, "CP"] 
+}
+#...fxn to get min error
+get_min_error <- function(x) {
+  min    <- which.min(x$cptable[, "xerror"])
+  xerror <- x$cptable[min, "xerror"] 
+}
+
+#....optimal hyperparameter chart
+hyper_grid %>%
+  mutate(
+    cp    = purrr::map_dbl(models, get_cp),
+    error = purrr::map_dbl(models, get_min_error)
+  ) %>%
+  arrange(error) %>%
+  top_n(-5, wt = error)
+
+#...if we are satisfied with these results, we could apply this final optimal model and predict on our test data
+    #minsplit of 5
+    #maxdepth of 8
+    #cp of .003
+
+
+#FINAL MODEL + PREDICTIONS
+final.rpart <- rpart(
+  formula = factor(weekend) ~ .,
+  data    = TBRays,
+  method  = "class",
+  control = list(minsplit = 5, maxdepth = 8, cp = 0.003)
+)
+
+probs <- data.frame(predict(final.rpart, test, type="prob"))
+pred <- data.frame(predict(final.rpart, test, type="class"))
+
+sum(pred == testy)/nrow(test)
+    #78.8% --> 91.6% accuracy
+
+#BAGGING w/ caret
+ctrl <- trainControl(method = "cv",  number = 10) 
+
+bagged.cv <- train(
+  factor(weekend) ~ .,
+  data = train,
+  method = "treebag",
+  trControl = ctrl,
+  importance = TRUE
+)
+
+bagged.cv
+    #Accuracy of 84%
+    #Kappa of 0.67
+
+plot(varImp(bagged.cv), 20)
+
+pred <- predict(bagged.cv, test)
+sum(pred == testy)/nrow(test)    #78.8% --> 86.8%
+
+#reafirms that this is a good model
+
+
+#####...for bootstrap CV see below
+
+
+#ROC/AUC [only works w/ probabilities]
+prediction(probs$X1, testy) %>%
+  performance(measure = "tpr", x.measure = "fpr") %>%
+  plot()
+
+prediction(probs$X1, testy) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+  #0.96
+
+#ROC/Lifting [only works w/ probabilities]
+pred <- prediction(probs$X1, test$weekend)
+perf <- performance(pred, "tpr", "fpr")
+      #calculates True Positive and False Positive Rates
+plot(perf, main="ROC Curve", colorize=T)
+
+perf.lift <-performance(pred, "lift", "rpp")
+plot(perf.lift, main="lift curve", colorize = T)
+
+#Calculating KS Stats
+###NOTE: do NOT use lifted performance creation when calculating this
+ks1.tree <- max(attr(perf, "y.values")[[1]]-
+                  (attr(perf, "x.values")[[1]]))
+ks1.tree     #0.835
+
+
+
+###################
+
+# Y = attendance (scale)
+
+hist(TBRays$attendance, freq=FALSE, main="Density plot")
+curve(dnorm(x, mean=mean(TBRays$attendance), sd=sd(TBRays$attendance)), add = TRUE, col='darkblue', lwd=2)
+
+#ORIGINAL MODEL
+rpart.model <- rpart(attendance~., 
+                     data = train, method = "anova")
+      #method can be "class", "poisson", "anova", or "exp" [if missing, the algorithm makes an intelligent guess]
+      #"class" if y is a factor | "poission" if y has 2 columns | "exp" if y is a survival object | "anova" for other
+
+      #remember...Rpart automatically performs 10 fold CV and prunes the model by applying diff CP 
+      #
+
+summary(rpart.model)  
+      #breaks down each node, the # of observations involved, the predicted class, probabilities, etc.
+
+prp(rpart.model)            #draws the deciison tree [basic]
+rpart.plot(rpart.model)     #draws the decision tree [pretty]
+fancyRpartPlot(rpart.model) #draws the decision tree [prettiest]
+
+rpart.model$variable.importance
+
+printcp(rpart.model)   
+      #shows the variables actually used in the model
+      #CP = Complexity Parameter
+      #optimal CP = lowest xerror [0.01]
+plotcp(rpart.model)
+      #another way to find optimal CP
+      #shows we get diminishing marginal returns after 7 tree nodes/CP of 0.025
+
+#original predictions
+predict <- predict(rpart.model, test, type="vector")
+
+RMSE(predict, testy)  #3338
+
+#creating a model with no boundries to experiment with tuning parameters
+rpart.model <- rpart(
+  formula = attendance ~ .,
+  data    = train,
+  method  = "anova", 
+  control = list(cp = 0, xval = 10)
+)
+
+rpart.model$cptable
+
+#TUNING
+#option 1 - assessing model w/ minsplit of 10 and maxdepth of 12....adjusting constantly and experimenting 1 by 1.....
+rpart.model <- rpart(
+  formula = attendance ~ .,
+  data    = train,
+  method  = "anova", 
+  control = list(minsplit = 10, maxdepth = 12, xval = 10)
+)
+
+#option 2 - grid search
+hyper_grid <- expand.grid(
+  minsplit = seq(5, 20, 1),
+  maxdepth = seq(8, 15, 1)
+)
+
+head(hyper_grid)
+
+models <- list()
+
+for (i in 1:nrow(hyper_grid)) {
+  
+  minsplit <- hyper_grid$minsplit[i]    # get minsplit, maxdepth values at row i
+  maxdepth <- hyper_grid$maxdepth[i]
+  
+  models[[i]] <- rpart(                 # train a model and store in the list
+    formula = attendance ~ .,
+    data    = train,
+    method  = "anova",
+    control = list(minsplit = minsplit, maxdepth = maxdepth)
+  )
+}
+
+
+#...fxn to get optimal CP
+get_cp <- function(x) {
+  min    <- which.min(x$cptable[, "xerror"])
+  cp <- x$cptable[min, "CP"] 
+}
+#...fxn to get min error
+get_min_error <- function(x) {
+  min    <- which.min(x$cptable[, "xerror"])
+  xerror <- x$cptable[min, "xerror"] 
+}
+
+#....optimal hyperparameter chart
+hyper_grid %>%
+  mutate(
+    cp    = purrr::map_dbl(models, get_cp),
+    error = purrr::map_dbl(models, get_min_error)
+  ) %>%
+  arrange(error) %>%
+  top_n(-5, wt = error)
+
+#...if we are satisfied with these results, we could apply this final optimal model and predict on our test data
+      #minsplit of 11
+      #maxdepth of 11
+      #cp of .01
+
+#FINAL MODEL + PREDICTIONS
+final.rpart <- rpart(
+  formula = attendance ~ .,
+  data    = TBRays,
+  method  = "anova",
+  control = list(minsplit = 11, maxdepth = 11, cp = 0.01)
+)
+
+pred <- predict(final.rpart, newdata=test)
+RMSE(pred=pred, obs=test$attendance)    #33,338 --> 3,145
+
+#BAGGING w/ caret
+ctrl <- trainControl(method = "cv",  number = 10) 
+
+bagged.cv <- train(
+  attendance ~ .,
+  data = train,
+  method = "treebag",
+  trControl = ctrl,
+  importance = TRUE
+)
+
+bagged.cv
+  #RMSE 3,136
+  #Rsq of 71.8%
+  #MAE 2,502
+
+plot(varImp(bagged.cv), 20)
+
+pred <- predict(bagged.cv, test)
+RMSE(pred, test$attendance)    # 3,145 --> 2,869
+
+#reafirms that this is a good model
+
+
+
+############ {bootstrapping as CV method}
+#Cross Validation! method = "rpart"
+      #tuning parameter = cp [complexity parameter]
+
+train.control <- trainControl(method = "boot", number = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+rpart.model.cv <- train(trainx, factor(trainy), method = "rpart",
+                        preProcess = c("center", "scale"),
+                        trControl=train.control)
+
+rpart.model.cv$results
+rpart.model.cv$bestTune
+    #cp, accuracy, classes
+    #optimal cp will have max accuracy (0.003 in this case)
+
+#tuned model
+rpart.model <- rpart(attendance~., 
+                     data = train, 
+                     method = "anova",
+                     control = list(cp = 0.003))
+
+#tuned predictions
+predict <- predict(rpart.model, test, type="vector")
+
+R2(predict, testy)  #.431
+RMSE(predict, testy)  #3,338 --> 3,283
+
+
+
+###### {redundant}
+#Validating Tuning Parameters w/ Pruning
+
+pruned.model <- prune(rpart.model, cp=.012)   #original model's suggestion
+pruned.model1 <- prune(rpart.model, cp=.005)  #CV model's suggestion
+
+fancyRpartPlot(pruned.model)
+fancyRpartPlot(pruned.model1)
+
+#Did the pruning improve the prediction?
+prune.predict1 <- predict(pruned.model, test, type = "vector")
+prune.predict2 <- predict(pruned.model1, test, type = "vector")
+
+RMSE(prune.predict1, testy)  #3,338 [original model]
+RMSE(prune.predict2, testy)  #3,283 [new model]
+
+
+
