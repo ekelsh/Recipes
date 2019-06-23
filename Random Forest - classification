@@ -1,0 +1,386 @@
+#Random Forests - classification
+
+#alternatives to logistic regression
+#probability of being in any hierarchical group
+#classification AND regression
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV and variety of tuning parameters on ENTIRE dataset
+#step 3: retrieve optimal Tuning Parameters & get CV model's measure of error for later model comparison
+#step 4: rebuid model w/ optimal hyperparameters
+#step 5: repeat step 1 w/ tuned model
+
+library(randomForest)
+library(rsample)
+library(party)
+library(dplyr)
+library(caret)
+library(h2o)
+library(ranger)
+library(pscl)
+library(caret)
+library(rpart.plot)
+library(AUC)
+library(rattle)
+library(ROCR)
+library(ROSE)
+library(ipred)
+
+set.seed(999)
+
+ggplot(data = TBRays, aes(day_of_week_effect, attendance)) + geom_boxplot(aes(group = day_of_week_effect))
+
+#TRAIN/TEST DATASETS
+#Create Training/Testing Datasets, Matrices and Set Seed
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -8])   #all factors except Y
+testx <- as.matrix(test[, -8])     
+
+trainy <- as.double(as.matrix(train[, 8]))  #only Y
+testy <- as.double(as.matrix(test[, 8]))
+
+
+#ORIGINAL MODEL
+rf.model <- randomForest(factor(weekend) ~., 
+                         data=train, type="class", 
+                         importance=TRUE, proximity=TRUE,
+                         na.action=na.omit)
+print(rf.model)
+      #No of Variables Tried @ each Split = 2
+      #ntrees = 500
+      #% of Variance explained (14.5%) ***pay attn to this when choosing/tuning models
+
+plot(rf.model)
+      #Error Rate Stabalizes around 150
+      #Plotted Error Rate is Based on the OOB Error Rate
+
+randomForest::importance(rf.model)
+
+randomForest::varImpPlot(rf.model)
+
+tuneRF(trainx, trainy, improve = 0.01, trace = T, plot = T)
+    #mtryStart = (starting value of mtry)
+    #ntreeTry = (number of trees used at the tuning stage)
+    #stepFactor = (at each iteration, mtry is inflated by this value)
+    #improve = (the relative improvement in OOB error must be by this much for the search to continue)
+    #trace = T (whether to print the progress of the search)
+    #plot = T (whether to plot the OOB error as function of mtry)
+
+
+#...to see how well the model performs on its own
+valid_split <- initial_split(TBRays, .8)
+
+train2 <- analysis(valid_split)
+
+valid <- assessment(valid_split)
+testx2 <- valid[setdiff(names(valid), "weekend")]
+testy2 <- factor(valid$weekend)
+
+rf_oob_comp <- randomForest(
+  formula = factor(weekend) ~ .,
+  data    = train2,
+  xtest   = testx2,
+  ytest   = testy2
+)
+
+#...extract oob and validation errors
+oob <- sqrt(rf_oob_comp$err.rate)
+validation <- sqrt(rf_oob_comp$test$err.rate)
+
+#...compare error rates
+tibble::tibble(
+  `Out of Bag Error` = oob,
+  `Test error` = validation,
+  ntrees = 1:rf_oob_comp$ntree
+) %>%
+  gather(Metric, RMSE, -ntrees) %>%
+  ggplot(aes(ntrees, RMSE, color = Metric)) +
+  geom_line() +
+  scale_y_continuous(labels = scales::dollar) +
+  xlab("Number of trees")
+
+
+#####TUNING 
+
+#Initial Tuning
+
+#...ntree =
+#...mtry =
+#...samsize =
+#...nodesize = 
+#maxnodes =
+
+set.seed(999)
+
+features <- setdiff(names(train), "weekend")
+
+best.mtry <- tuneRF(
+  x          = train[features],
+  y          = factor(train$weekend),
+  ntreeTry   = 500,
+  mtryStart  = 2,                    #starting w/ mtry = 2
+  stepFactor = .5,                   #increasing by a factor of 0.5...
+  improve    = 0.01,                 #...until the OOB error stops improving by 1%
+  trace      = FALSE                 # to not show real-time progress 
+)
+
+print(best.mtry)                     #optimal mtry = 4  (which is close to the default factors/3 = 2.67)
+
+
+#Tuning Grid
+hyper_grid <- expand.grid(
+  mtry       = seq(2, 7, by = 1),
+  node_size  = seq(2, 7, by = 1),
+  sampe_size = c(.55, .632, .70, .80),
+  OOB_RMSE   = 0
+)
+
+nrow(hyper_grid)    #total number of tuning combinations
+
+#...now we loop through each hyperparameter
+for(i in 1:nrow(hyper_grid)) {
+  #trains model
+  model <- ranger(
+    formula         = factor(weekend) ~ ., 
+    data            = train, 
+    num.trees       = 500,
+    mtry            = hyper_grid$mtry[i],
+    min.node.size   = hyper_grid$node_size[i],
+    sample.fraction = hyper_grid$sampe_size[i],
+    seed            = 123
+  )
+  #adds OOB error to grid
+  hyper_grid$OOB_RMSE[i] <- sqrt(model$prediction.error)
+}
+
+hyper_grid %>% 
+  dplyr::arrange(OOB_RMSE) %>%
+  head(10)
+  #mtry of 4, node size of 7, sample size of 0.632, 
+
+
+#ONE HOT ENCODING
+one_hot <- dummyVars(~ ., train, fullRank = FALSE)
+train_hot <- predict(one_hot, train) %>% as.data.frame()
+names(train_hot) <- make.names(names(train_hot), allow_ = FALSE)
+
+hyper_grid_2 <- expand.grid(
+  mtry       = seq(2, 7, by = 1),
+  node_size  = seq(2, 7, by = 1),
+  sampe_size = c(.55, .632, .70, .80),
+  OOB_RMSE  = 0
+)
+
+#...perform grid search
+for(i in 1:nrow(hyper_grid_2)) {
+  model <- ranger(
+    formula         = factor(weekend) ~ ., 
+    data            = train_hot, 
+    num.trees       = 500,
+    mtry            = hyper_grid_2$mtry[i],
+    min.node.size   = hyper_grid_2$node_size[i],
+    sample.fraction = hyper_grid_2$sampe_size[i],
+    seed            = 123
+  )
+  hyper_grid_2$OOB_RMSE[i] <- sqrt(model$prediction.error)
+}
+
+hyper_grid_2 %>% 
+  dplyr::arrange(OOB_RMSE) %>%
+  head(10)
+  #...no, one hot encoding didn't do us any favors
+
+#Build Model w/ Optimal Parameters to Get an Idea of OOB Error Rate
+OOB_RMSE <- vector(mode = "numeric", length = 100)
+
+for(i in seq_along(OOB_RMSE)) {
+  
+  optimal_ranger <- ranger(
+    formula         = factor(weekend) ~ ., 
+    data            = train, 
+    num.trees       = 500,
+    mtry            = 4,
+    min.node.size   = 3,
+    sample.fraction = .8,
+    importance      = 'impurity'
+  )
+  OOB_RMSE[i] <- sqrt(optimal_ranger$prediction.error)
+}
+    #so we should expect an error of .35 - .375
+    #...importance = "impurity" allows us to assess variable importance
+    #variable importance measured by the decrease in MSE each time a variable is used as a node split
+
+hist(OOB_RMSE, breaks = 20)
+
+
+optimal_ranger$variable.importance %>% 
+  tidy() %>%
+  dplyr::arrange(desc(x)) %>%
+  dplyr::top_n(25) %>%
+  ggplot(aes(reorder(names, x), x)) +
+  geom_col() +
+  coord_flip() +
+  ggtitle("Top 25 important variables")
+
+  #attendance, home win perc, and away win perc is most important
+
+
+#PREDICTING
+predict.rf <- predict(rf.model, test)
+head(predict.rf)
+
+
+#ACCURACY
+sum(predict.rf == testy)/203  #78.8% accurate
+
+head(data.frame("Actual" = test$weekend, 
+                "Predicted" = predict.rf))
+
+
+
+
+
+#########
+#APPENDIX
+#########
+
+#Tuning the Model - Option #1 Random Search (Quickest)...use fewer repeats and tuneLength for faster processing
+features <- setdiff(names(train), "weekend")
+
+train.control <- trainControl( method = "repeatedcv", number = 5, repeats = 5,
+                               search = "grid", verboseIter = TRUE,
+                               savePredictions = "final")
+
+mtry <- sqrt(ncol(train[features]))
+
+rf.model <- train(factor(weekend) ~., data = train, method = "rf",
+                  metric ="Accuracy",
+                  preProcess = c("center", "scale"),
+                  tunelength = 50, trControl=train.control)
+    #metric = "Accuracy" or "Kappa" for Classification
+    #metric = "RMSE" or "Rsquared" for Regression
+
+rf.model$bestTune  
+    #mtry= 4
+
+print(rf.random)
+
+rf.model$finalModel 
+    #mtry = 4, ntree=500
+    #variance explained = 78.79%  ***pay attn to this when choosing/tuning models
+
+plot(rf.model)
+
+
+#Tuning the Model - Option #2 Grid Search
+features <- setdiff(names(train), "weekend")
+
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+
+tunegrid <- expand.grid(.mtry=c(1:15))
+
+rf_gridsearch <- train(factor(weekend)~., data=train, method="rf", metric="Accuracy", tuneGrid=tunegrid, trControl=control)
+
+print(rf_gridsearch)
+    #mtry = 3 for best Rsquared
+    #mtry = 5 for best RMSE value
+
+plot(rf_gridsearch)
+    #mtry = 5
+
+bestmtry <- tuneRF(train[features], train$weekend, stepFactor=1.5, improve=1e-5, ntree=500)
+
+print(bestmtry)
+    #mtry = 4 has lowest OOB Error
+
+
+#Tuning the Model - Option #3 Tuning Manually
+features <- setdiff(names(train), "weekend")
+
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+
+tunegrid <- expand.grid(mtry=c(sqrt(ncol(train[features]))))
+
+modellist <- list()
+for (ntree in c(400, 500, 750, 1000)) {
+  set.seed(999)
+  fit <- train(factor(weekend)~., data=train, method="rf", metric = "RMSE", tuneGrid=tunegrid, trControl=control, ntree=ntree)
+  key <- toString(ntree)
+  modellist[[key]] <- fit
+}                                      #metric = RMSE or Rsquared for Regression
+                                       #metric = "Accuracy" for "Kappa" for Classification
+
+results <- resamples(modellist)        #to compare results
+summary(results)                       #best RSquared 400, best RMSE 500
+
+dotplot(results)
+    #continue to tune modellist until exact ntree
+
+#Tuning the Model - Option #4 Custom Model...this takes a LONG TIME
+customRF <- list(type = "Class", library = "randomForest", loop = NULL)
+
+customRF$parameters <- data.frame(parameter = c("mtry", "ntree"), class = rep("numeric", 2), label = c("mtry", "ntree"))
+
+customRF$grid <- function(x, y, len = NULL, search = "grid") {}
+
+customRF$fit <- function(x, y, wts, param, lev, last, weights, classProbs, ...) {
+  randomForest(x, y, mtry = param$mtry, ntree=param$ntree, ...)
+}
+
+customRF$predict <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+  predict(modelFit, newdata)
+
+customRF$prob <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+  predict(modelFit, newdata, type = "prob")
+
+customRF$sort <- function(x) x[order(x[,1]),]
+
+customRF$levels <- function(x) x$classes
+
+#...put in fewer ntree options for faster processing
+
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+tunegrid <- expand.grid(.mtry=c(1:15), .ntree=c(400, 450, 500, 550, 600))
+
+custom <- train(attendance~., data=train, method=customRF, metric="RMSE", tuneGrid=tunegrid, trControl=control)
+
+summary(custom)
+plot(custom)       #shows that mtry = 4 is best parameter w/ ntree 400
+
+
+#Creating the Tuned Model
+rf.model <- randomForest(factor(weekend) ~., 
+                         data=train, type="class", 
+                         importance=TRUE, proximity=TRUE,
+                         mtry= 4, ntree = 493,
+                         na.action=na.omit)
+
+plot(rf.model)
+print(rf.model)          #% of Variance explained (72.58%) ***pay attn to this when choosing/tuning models
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
