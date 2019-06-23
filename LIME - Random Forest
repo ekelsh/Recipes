@@ -1,0 +1,50 @@
+#LIME w/ caret package (RF)
+#lime can be performed w/ caret models, xgboost models, h20 models, and gbm models
+
+library(caret)
+library(lime)
+library(rsample)
+
+#Creating the Tuned Model (caret, xgboost, h2o)
+features <- setdiff(names(train), "attendance")
+
+train.control <- trainControl( method = "repeatedcv", number = 5, repeats = 5,
+                               search = "grid", verboseIter = TRUE,
+                               savePredictions = "final")
+
+mtry <- sqrt(ncol(train[features]))
+
+rf.model <- train(attendance ~., data = train, method = "rf",
+                  metric ="RMSE",
+                  preProcess = c("center", "scale"),
+                  tunelength = 50, trControl=train.control)
+
+#LIME
+#understanding variable effects [creates model explanation functions based on training data]
+
+#first, need to define model type and prediction method
+model_type.rf <- function(x, ...) {
+  return("regression")
+}
+
+predict_model.gbm <- function(x, newdata, ...) {
+  pred <- predict(x, newdata, n.trees = x$n.trees)
+  return(as.data.frame(pred))
+}
+
+#takes 2 cases in our testing data...
+local.obs <- test[1:2, ]
+
+#creates a model explanaation function based on the training data
+explainer <- lime(train, rf.model)
+explanation <- explain(local.obs, explainer, n_features = 5)
+
+plot_features(explanation)
+#shows the top 5 factors that predicted case 1 and case 2 in the testing data
+#shows wether the factors predicted these cases in a positive or negative way
+
+# predicting
+pred <- predict(rf.model, n.trees = rf.model$n.trees, test)
+
+caret::RMSE(pred, test$attendance)
+## 2858.6
