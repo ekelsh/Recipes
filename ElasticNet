@@ -1,0 +1,137 @@
+#ELASTIC NET
+#Alpha controls the mix of the 2 penalties  (between 0 [ridge] and 1 [lasso])
+#Lambda controls the amount of penalization (shrinkage)
+
+#step 1: get an idea w/ how the model will perform w/ simple train/test split
+#step 2: train model w/ 10x10 k-fold repeated CV and variety of tuning parameters on ENTIRE dataset
+#step 3: retrieve optimal Tuning Parameters & get CV model's measure of error for later model comparison
+#step 4: rebuid model w/ optimal hyperparameters
+#step 5: repeat step 1 w/ tuned model
+
+library(ridge)
+library(AUC)
+library(car)
+library(glmnet)
+library(lmtest)
+library(RcmdrMisc)
+library(caret)
+library(dplyr)
+library(broom)
+library(modelr)
+library(ridge)
+library(elasticnet)
+library(relaimpo)
+
+set.seed(999)
+
+#Create Training/Testing Datasets and Matrices
+set.seed(999)    #set seed to replicate results
+train.index <- sample(1:nrow(TBRays), 0.75*nrow(TBRays))  #indices for 75% training data
+
+train <- TBRays[train.index, ]  #training data (607 observations)
+test <- TBRays[-train.index, ]  #testing data (evaluate) (203 observations)
+
+
+trainx <- as.matrix(train[, -7])  #all variables besides Y / string variables
+testx <- as.matrix(test[, -7])
+
+trainy <- as.double(as.matrix(train[, 7]))  #represents the Y in question
+testy <- as.double(as.matrix(test[, 7]))
+
+
+#Create Multiple Models
+lasso    <- glmnet(trainx, trainy, alpha = 1.0)   #LASSO
+elastic1 <- glmnet(trainx, trainy, alpha = 0.25)  #heavier LASSO penalty
+elastic2 <- glmnet(trainx, trainy, alpha = 0.50)  #equal combo of both penalties
+elastic3 <- glmnet(trainx, trainy, alpha = 0.75)  #heavier ridge penalty
+ridge    <- glmnet(trainx, trainy, alpha = 0.0)  #ridge
+
+plot(lasso, xvar = "lambda",    main = "Lasso (Alpha = 1)\n\n\n")
+plot(elastic1, xvar = "lambda", main = "Elastic Net (Alpha = .25)\n\n\n")
+plot(elastic2, xvar = "lambda", main = "Elastic Net (Alpha = .50)\n\n\n")
+plot(elastic3, xvar = "lambda", main = "Elastic Net (Alpha = .75)\n\n\n")
+plot(ridge, xvar = "lambda",    main = "Ridge (Alpha = 0)\n\n\n")
+
+#Create Tuned Model (CV)
+      #tuning parameter = lambda
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+enet.model <- train(attendance ~., data=train,
+                    method = "enet", trControl = train.control,
+                    tuneLength = 50)
+      #tuneLength sets the number of alpha values tested (50 in this case)...default is 3 (.10, .55, 1)
+
+enet.model$bestTune   #0.04
+
+#Create Helper FXN
+#extracts row with the best tuning parameter
+get_best_result = function(caret_fit) {
+  best = which(rownames(caret_fit$results) == rownames(caret_fit$bestTune))
+  best_result = caret_fit$results[best, ]
+  rownames(best_result) = NULL
+  best_result
+}
+
+#Call on the Helper FXN
+get_best_result(enet.model)   
+      #lambda of 0.04
+      #RMSE of 2746.88
+      #Rsq of 78.6%
+      #MAE of 2210.677
+
+#Create Tuned ENet Model (using the helper function parameters)
+enet.model <- glmnet(trainx, trainy, 
+                  lambda=0.04, family = "gaussian")
+
+predict <- predict(enet.model, testx)
+
+R2(predict, testy)   #77.8
+
+#####
+#CROSS VALIDATION!!!!!!
+      #tuning parameter = lambda
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                              verboseIter = TRUE, savePredictions = "final",
+                              search = "random")
+
+cv.enet <- train(attendance ~., data=train, method = "enet",
+                 preProcess = c("center", "scale"),
+                 tunelength=50, trControl=train.control)
+
+cv.enet$bestTune
+    #lambda = 0.0
+
+predict <- predict(cv.enet, s = 0, testx)
+
+R2(predict, testy)    #77.8%
+
+
+#...and then compare to both ridge and lasso to make sure....
+#####
+
+#####
+#Best Subset Selection
+
+regsubsets(attendance ~ ., TBRays, nvmax = 19)
+summary(regsubsets(attendance ~ ., TBRays, nvmax = 19))
+#a star (*) means the variable was included in the mock model
+#each model represents a model with one additional variable added to it
+#shows relative importance of each variable in a way
+
+#####
+#Better Method for ENET
+a <- seq(0.1, 0.99, 0.05)
+
+search <- foreach(i = a, .combine = rbind) %dopar% {
+  cv <- cv.glmnet(trainx, trainy, nfold = 10, type.measure = "deviance", paralle = TRUE, alpha = i)
+  data.frame(cvm = cv$cvm[cv$lambda == cv$lambda.1se], lambda.1se = cv$lambda.1se, alpha = i)
+}
+
+cv.enet <- search[search$cvm == min(search$cvm), ]
+cv.enet #optimal lambda and alpha
+
+enet.model <- glmnet(trainx, trainy, lambda = cv.enet$lambda.1se, 
+                     alpha = cv.enet$alpha)
+coef(enet.model)  #model coefficients
