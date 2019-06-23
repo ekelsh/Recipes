@@ -1,0 +1,99 @@
+#GRADIENT DESCENT
+
+
+#Gradient Decent FXN
+
+gradientR<-function(y, x, epsilon, eta, iters){
+  epsilon = 0.0001
+  x = as.matrix(data.frame(rep(1,length(y)),x))
+  n = dim(x)[1]
+  print("Initialize Parameters...")
+  theta.init = as.matrix(rnorm(n=dim(x)[2], mean=0,sd = 1)) # Initialize theta
+  theta.init = t(theta.init)
+  e = t(y) - theta.init%*%t(x)
+  grad.init = -(2/n)%*%(e)%*%x
+  theta = theta.init - eta*(1/n)*grad.init
+  l2loss = c()
+  for(i in 1:iters){
+    l2loss = c(l2loss,sqrt(sum((t(y) - theta%*%t(x))^2)))
+    e = t(y) - theta%*%t(x)
+    grad = -(2/n)%*%e%*%x
+    theta = theta - eta*(2/n)*grad
+    if(sqrt(sum(grad^2)) <= epsilon){
+      break
+    }
+  }
+  print("Algorithm Converged")
+  print(paste("Final Gradient Norm is",sqrt(sum(grad^2))))
+  values<-list("coef" = t(theta), "l2loss" = l2loss)
+  return(values)
+}
+
+
+
+#Parameter Estimation FXN
+
+normalest <- function(y, x){
+  x = data.frame(rep(1,length(y)),x)
+  x = as.matrix(x)
+  theta = solve(t(x)%*%x)%*%t(x)%*%y
+  return(theta)
+}
+
+#Putting it in Action
+
+y = TBRays$attendance
+
+x1 = TBRays$home_win_pct
+x2 = TBRays$away_win_pct
+x3 = TBRays$weekend
+x4 = TBRays$is_bobblehead
+x5 = TBRays$temp
+
+ptm <- proc.time()
+gdec.eta1 = gradientR(y = y, x = data.frame(x1,x2,x3, x4,x5), 
+                      eta = 100, iters = 100)
+    ##Final Gradient Norm is 6.33262328252554
+
+proc.time() - ptm
+    ##user = 0.243, system = 0.107, elapsed = 61.859
+
+
+#Checking the Parameter Values
+
+normalest(y=y, x = data.frame(x1,x2,x3,x4,x5))
+
+      #Intercept               25297.994231
+      #x1 - HWP                3955.903541
+      #x2 - AWP                1525.185946
+      #x3 - Weekend            6610.245266
+      #x4 - Bobble            -5.564607
+      #x5 - Temp              -84.432453
+
+#Checking the Coefficients
+
+gdec.eta1$coef
+      #Intercept               25,293
+      #x1 - HWP                3,956
+      #x2 - AWP                1,525
+      #x3 - Weekend            6,611
+      #x4 - Bobble             29.46
+      #x5 - Temp              -84.11
+
+#NOTE: We Want the Parameter Estimations and the Coefficients to be CLOSE
+
+#Plotting the L2 - Loss for Each Epoch
+      #epoch = exposing a learning algorithm to the entire set of training data
+
+plot(1:length(gdec.eta1$l2loss),gdec.eta1$l2loss,xlab = "Epoch", ylab = "L2-loss")
+lines(1:length(gdec.eta1$l2loss),gdec.eta1$l2loss)
+
+
+
+
+
+
+
+
+
+
